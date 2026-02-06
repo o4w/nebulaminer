@@ -603,7 +603,7 @@ const App = () => {
               </div>
 
               <nav className="flex bg-slate-900/50 p-1 rounded-2xl self-start border border-white/5 overflow-x-auto">
-                <NavBtn active={activeTab === 'mine'} onClick={() => setActiveTab('mine'} icon={<Pickaxe />} label="Mine" />
+                <NavBtn active={activeTab === 'mine'} onClick={() => setActiveTab('mine')} icon={<Pickaxe />} label="Mine" />
                 <NavBtn active={activeTab === 'shop'} onClick={() => setActiveTab('shop')} icon={<ShoppingBag />} label="Shop" />
                 <NavBtn active={activeTab === 'tech'} onClick={() => setActiveTab('tech')} icon={<Microchip />} label="Tech" />
                 <NavBtn active={activeTab === 'market'} onClick={() => setActiveTab('market')} icon={<BarChart3 />} label="Trade" />
