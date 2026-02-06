@@ -665,7 +665,7 @@ const App = () => {
               <BarChart3 className="w-8 h-8 text-white" />
             </div>
             <div>
-              <h1 className="orbitron text-2xl font-black tracking-tight text-white uppercase italic">Nebula <span className="text-cyan-400">Trading Hub</span></h1>
+              <h1 className="orbitron text-2xl font-black tracking-tight text-white uppercase italic">Nebula <span className="text-cyan-400">Game</span></h1>
               <div className="text-[10px] font-mono text-slate-500 tracking-[0.2em] flex flex-col gap-1 mt-1">
                 <div className="flex items-center gap-2">
                   <span className={`w-2 h-2 ${saveError ? 'bg-red-500 animate-pulse' : isSaving ? 'bg-yellow-500 animate-pulse' : 'bg-green-500'} rounded-full`} /> 
@@ -726,7 +726,7 @@ const App = () => {
           <aside className="lg:col-span-1 flex flex-col gap-6">
              <div className="glass rounded-3xl p-6 border border-yellow-500/20 bg-yellow-500/5">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="orbitron text-xs font-black text-yellow-500 uppercase tracking-widest">Active Missions</h3>
+                  <h3 className="orbitron text-xs font-black text-yellow-500 uppercase tracking-widest">Aktif Görevler</h3>
                   <Target size={16} className="text-yellow-500" />
                 </div>
                 <div className="space-y-3 text-left">
@@ -742,24 +742,7 @@ const App = () => {
                 </div>
              </div>
              
-             <div className="glass rounded-3xl p-6 border border-cyan-500/10 text-center">
-                <p className="text-[9px] font-mono text-slate-500 uppercase mb-2">Diagnostic Tools</p>
-                <div className="flex flex-col gap-2">
-                  <button 
-                    onClick={forceSync}
-                    className={`w-full py-2 rounded-xl border transition-all text-[10px] orbitron font-bold flex items-center justify-center gap-2 ${saveError ? 'bg-red-500/20 border-red-500 text-red-500' : 'bg-slate-900 border-slate-700 text-cyan-400 hover:bg-slate-800'}`}
-                  >
-                    {isSaving ? <Loader2 size={14} className="animate-spin" /> : saveError ? <CloudOff size={14} /> : <RefreshCw size={14} />} 
-                    FORCE SYNC
-                  </button>
-                  <button 
-                    onClick={() => alert("SQL Çözümü:\n\nALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at timestamp with time zone DEFAULT now();\n\nKomutunu SQL Editor'de çalıştırın.")}
-                    className="w-full py-2 rounded-xl border border-slate-700 text-slate-500 hover:text-white transition-all text-[10px] orbitron font-bold flex items-center justify-center gap-2"
-                  >
-                    <Info size={14} /> DB HELP
-                  </button>
-                </div>
-             </div>
+             
           </aside>
 
           <main className="lg:col-span-3 flex flex-col gap-6">
@@ -787,8 +770,8 @@ const App = () => {
                      <button onClick={mineManual} className="relative w-56 h-56 md:w-72 md:h-72 glass border-4 border-slate-700/50 rounded-full flex flex-col items-center justify-center gap-3 hover:scale-105 active:scale-90 transition-all shadow-2xl overflow-hidden">
                         <div className="absolute inset-0 border-[20px] border-t-cyan-500/20 border-r-transparent border-b-transparent border-l-transparent rounded-full animate-spin-slow" />
                         <Pickaxe size={48} className="text-cyan-400" />
-                        <span className="orbitron text-sm font-black text-white tracking-widest uppercase">Asteroid Core</span>
-                        <span className="font-mono text-[10px] text-cyan-600 uppercase tracking-widest">Manual Node</span>
+                        <span className="orbitron text-sm font-black text-white tracking-widest uppercase">Kazmaya Başla</span>
+                        <span className="font-mono text-[10px] text-cyan-600 uppercase tracking-widest">Manuel Kazım</span>
                      </button>
                   </div>
                   <div className="grid grid-cols-3 gap-8 text-center">
