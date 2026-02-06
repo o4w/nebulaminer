@@ -28,95 +28,71 @@ import {
   ArrowRightLeft,
   CloudOff,
   Loader2,
-  Info
+  Info,
+  User,
+  Mail,
+  Lock,
+  Camera,
+  Save,
+  ShieldCheck,
+  Compass,
+  Flame,
+  MessageSquare,
+  Bot,
+  BrainCircuit,
+  Timer,
+  ChevronRight,
+  Shield,
+  Crosshair,
+  Map as MapIcon,
+  Sword,
+  Activity,
+  Box,
+  ZapOff,
+  ChevronUp,
+  HardDrive,
+  Handshake,
+  Search,
+  Check,
+  X,
+  History,
+  UserPlus,
+  LogIn,
+  Gem
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
+import { GoogleGenAI } from "@google/genai";
 
-/**
- * --- KRİTİK: COLUMN 'updated_at' NOT FOUND HATASI ÇÖZÜMÜ ---
- * Supabase Dashboard -> SQL Editor kısmına aşağıdaki komutları yapıştırıp 'Run' diyerek sütunu ekleyin:
- * 
- * -- 1. Eksik Sütunu Ekle
- * ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at timestamp with time zone DEFAULT now();
- * 
- * -- 2. Eğer Tablolar Hiç Yoksa Tam Liste:
- * create table if not exists users (
- *   id text primary key,
- *   password text not null,
- *   game_state jsonb default '{}'::jsonb,
- *   updated_at timestamp with time zone default now()
- * );
- * 
- * create table if not exists market_listings (
- *   id uuid default gen_random_uuid() primary key,
- *   seller_id text references users(id) on delete cascade,
- *   resource_type text not null,
- *   amount double precision not null,
- *   price double precision not null,
- *   created_at timestamp with time zone default now()
- * );
- * 
- * alter table users disable row level security;
- * alter table market_listings disable row level security;
- */
-
-// --- Supabase Client Initialization ---
+// --- Başlatma ---
 const SUPABASE_URL = 'https://slfxijiowcbqzhzlnhhh.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_VJ4oUTpjq-KbKecplM7mog_RR2lhNCz';
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// --- Types ---
-interface ResourceState {
-  iron: number;
-  plasma: number;
-  crystal: number;
-  dataBits: number;
+// --- Tipler ---
+interface Ship {
+  id: string;
+  type: 'miner' | 'defender' | 'hauler';
+  name: string;
+  count: number;
+  cost: { credits: number; iron: number; plasma: number };
+  power: number; 
 }
 
-interface TechState {
-  marketAI: number;
-  taxOptimization: number;
-  nanoStorage: number;
-  neuralMining: number;
-}
-
-interface MarketState {
-  [key: string]: { 
-    price: number; 
-    trend: 'up' | 'down' | 'stable'; 
-    demand: number;
-  };
-}
-
-interface CosmicEvent {
+interface Sector {
   id: string;
   name: string;
-  description: string;
-  effect: 'plasma_boost' | 'iron_crash' | 'research_surge' | 'none';
-  duration: number;
-}
-
-interface Mission {
-  id: string;
-  title: string;
-  description: string;
-  requirement: { type: keyof ResourceState | 'credits'; amount: number };
-  reward: number;
-  completed: boolean;
-}
-
-interface MarketListing {
-  id: string;
-  seller_id: string;
-  resource_type: keyof typeof BASE_MARKET_PRICES;
-  amount: number;
-  price: number;
-  created_at: string;
+  type: 'core' | 'frontier' | 'void';
+  resourceMultiplier: number;
+  risk: number;
+  controlled: boolean;
+  deployedShips: { [key: string]: number };
 }
 
 interface GameState {
   credits: number;
-  resources: ResourceState;
+  xp: number;
+  level: number;
+  resources: { iron: number; plasma: number; crystal: number; dataBits: number; darkMatter: number };
   upgrades: {
     pickaxePower: number;
     autoMiners: number;
@@ -125,10 +101,11 @@ interface GameState {
     researchHubs: number;
     storageLevel: number;
   };
-  technologies: TechState;
-  market: MarketState;
-  missions: Mission[];
+  fleet: { [key: string]: number };
+  sectors: Sector[];
+  threatLevel: number; 
   lastUpdate: number;
+  market: { [key: string]: { price: number; trend: 'up' | 'down' | 'stable' } };
 }
 
 interface UserData {
@@ -137,878 +114,815 @@ interface UserData {
   gameState: GameState;
 }
 
-interface LeaderboardEntry {
+interface TradeProposal {
   id: string;
-  credits: number;
+  sender_id: string;
+  receiver_id: string;
+  offer: { credits: number; iron: number; plasma: number };
+  request: { credits: number; iron: number; plasma: number };
+  status: 'pending' | 'accepted' | 'rejected';
+  created_at: string;
 }
 
-// --- Constants ---
-const BASE_MARKET_PRICES = { iron: 2, plasma: 15, crystal: 50 };
-const MARKET_TAX_BASE = 0.20;
+// --- Sabitler ---
+const SHIP_TYPES: Ship[] = [
+  { id: 'miner', type: 'miner', name: 'Madenci Fırkateyni', count: 0, cost: { credits: 1000, iron: 500, plasma: 100 }, power: 5 },
+  { id: 'defender', type: 'defender', name: 'Kalkan Muhribi', count: 0, cost: { credits: 2000, iron: 1000, plasma: 300 }, power: 15 },
+  { id: 'hauler', type: 'hauler', name: 'Ağır Nakliye Gemisi', count: 0, cost: { credits: 1500, iron: 400, plasma: 50 }, power: 2 },
+];
 
-const INITIAL_MISSIONS: Mission[] = [
-  { id: '1', title: 'İlk Adım', description: '500 Demir topla.', requirement: { type: 'iron', amount: 500 }, reward: 250, completed: false },
-  { id: '2', title: 'Enerji Ağı', description: '100 Plazma topla.', requirement: { type: 'plasma', amount: 100 }, reward: 1000, completed: false },
-  { id: '3', title: 'Kripto Tüccarı', description: '5000 Kredi biriktir.', requirement: { type: 'credits', amount: 5000 }, reward: 2000, completed: false }
+const SECTORS: Sector[] = [
+  { id: 's1', name: 'Alfa Merkezi', type: 'core', resourceMultiplier: 1.0, risk: 5, controlled: true, deployedShips: {} },
+  { id: 's2', name: 'Delta Sınırı', type: 'frontier', resourceMultiplier: 2.5, risk: 25, controlled: false, deployedShips: {} },
+  { id: 's3', name: 'Omega Boşluğu', type: 'void', resourceMultiplier: 6.0, risk: 65, controlled: false, deployedShips: {} },
 ];
 
 const INITIAL_GAME_STATE: GameState = {
-  credits: 100,
-  resources: { iron: 0, plasma: 0, crystal: 0, dataBits: 0 },
-  upgrades: {
-    pickaxePower: 1,
-    autoMiners: 0,
-    plasmaExtractors: 0,
-    crystalRefineries: 0,
-    researchHubs: 0,
-    storageLevel: 1
-  },
-  technologies: {
-    marketAI: 0,
-    taxOptimization: 0,
-    nanoStorage: 0,
-    neuralMining: 0
-  },
+  credits: 5000,
+  xp: 0,
+  level: 1,
+  resources: { iron: 1000, plasma: 200, crystal: 50, dataBits: 0, darkMatter: 0 },
+  upgrades: { pickaxePower: 1, autoMiners: 0, plasmaExtractors: 0, crystalRefineries: 0, researchHubs: 0, storageLevel: 1 },
+  fleet: { miner: 0, defender: 0, hauler: 0 },
+  sectors: SECTORS,
+  threatLevel: 10,
+  lastUpdate: Date.now(),
   market: {
-    iron: { price: 2, trend: 'stable', demand: 50 },
-    plasma: { price: 15, trend: 'stable', demand: 30 },
-    crystal: { price: 50, trend: 'stable', demand: 10 }
-  },
-  missions: INITIAL_MISSIONS,
-  lastUpdate: Date.now()
-};
-
-const UPGRADE_COSTS = {
-  pickaxePower: (l: number) => Math.floor(10 * Math.pow(1.6, l - 1)),
-  autoMiners: (c: number) => Math.floor(50 * Math.pow(1.4, c)),
-  plasmaExtractors: (c: number) => Math.floor(500 * Math.pow(1.5, c)),
-  crystalRefineries: (c: number) => Math.floor(5000 * Math.pow(1.7, c)),
-  researchHubs: (c: number) => Math.floor(200 * Math.pow(1.8, c)),
-  storage: (l: number) => Math.floor(100 * Math.pow(2.2, l - 1))
-};
-
-const TECH_COSTS = {
-  marketAI: (l: number) => Math.floor(50 * Math.pow(2.5, l)),
-  taxOptimization: (l: number) => Math.floor(100 * Math.pow(3, l)),
-  nanoStorage: (l: number) => Math.floor(150 * Math.pow(2.2, l)),
-  neuralMining: (l: number) => Math.floor(80 * Math.pow(2.8, l))
-};
-
-const STORAGE_LIMITS = (level: number, techLevel: number) => 
-  Math.floor((level * 1000) * (1 + (techLevel * 0.5)));
-
-// --- Database Service (Supabase) ---
-const DBService = {
-  getUser: async (userId: string): Promise<UserData | null> => {
-    try {
-      const { data, error } = await supabase.from('users').select('*').eq('id', userId).single();
-      if (error) {
-        console.warn("DBService.getUser warning:", error.message);
-        return null;
-      }
-      return {
-        id: data.id,
-        password: data.password,
-        gameState: data.game_state
-      };
-    } catch (e) {
-      console.error("DBService.getUser critical error:", e);
-      return null;
-    }
-  },
-  saveUser: async (user: UserData) => {
-    const { error } = await supabase.from('users').upsert({
-      id: user.id,
-      password: user.password,
-      game_state: user.gameState
-    }, { onConflict: 'id' });
-    if (error) {
-      console.error("Supabase SaveUser Error:", error.message);
-      throw error;
-    }
-  },
-  updateGameState: async (userId: string, state: GameState) => {
-    try {
-      const { error } = await supabase
-        .from('users')
-        .update({ 
-          game_state: state, 
-          updated_at: new Date().toISOString() 
-        })
-        .eq('id', userId);
-      
-      if (error) {
-        console.error("Supabase UpdateGameState Error:", error.message);
-        // Eğer hata updated_at sütunu ile ilgiliyse, sütunsuz güncellemeyi dene
-        if (error.message.includes('updated_at')) {
-          const { error: retryError } = await supabase
-            .from('users')
-            .update({ game_state: state })
-            .eq('id', userId);
-          return retryError;
-        }
-        return error;
-      }
-      return null;
-    } catch (e: any) {
-      return { message: e.message || "Network error" };
-    }
-  },
-  getLeaderboard: async (): Promise<LeaderboardEntry[]> => {
-    const { data, error } = await supabase
-      .from('users')
-      .select('id, game_state->credits')
-      .order('game_state->credits', { ascending: false })
-      .limit(10);
-    
-    if (error) return [];
-    return (data || []).map(u => ({ id: u.id, credits: Number(u.credits || 0) }));
-  },
-  getListings: async (): Promise<MarketListing[]> => {
-    const { data, error } = await supabase
-      .from('market_listings')
-      .select('*')
-      .order('created_at', { ascending: false });
-    if (error) return [];
-    return data || [];
-  },
-  postListing: async (listing: Omit<MarketListing, 'id' | 'created_at'>) => {
-    const { error } = await supabase.from('market_listings').insert(listing);
-    if (error) console.error("Supabase PostListing Error:", error.message);
-  },
-  cancelListing: async (listingId: string) => {
-    const { error } = await supabase.from('market_listings').delete().eq('id', listingId);
-    if (error) console.error("Supabase CancelListing Error:", error.message);
-  },
-  purchaseListing: async (listing: MarketListing, buyerId: string) => {
-    const seller = await DBService.getUser(listing.seller_id);
-    if (!seller) throw new Error("Satıcı bulunamadı.");
-    const sellerState = seller.gameState;
-    sellerState.credits += listing.price;
-    await DBService.updateGameState(listing.seller_id, sellerState);
-    await DBService.cancelListing(listing.id);
+    iron: { price: 2, trend: 'stable' },
+    plasma: { price: 15, trend: 'stable' },
+    crystal: { price: 50, trend: 'stable' },
+    darkMatter: { price: 500, trend: 'stable' }
   }
 };
 
-// --- Auth Screen ---
-const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
-  const [isRegister, setIsRegister] = useState(false);
-  const [userId, setUserId] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
-
-    try {
-      const user = await DBService.getUser(userId);
-      if (isRegister) {
-        if (user) {
-          setError('Bu Pilot ID zaten kullanımda.');
-        } else {
-          const newUser = { id: userId, password, gameState: INITIAL_GAME_STATE };
-          await DBService.saveUser(newUser);
-          onLogin(newUser);
-        }
-      } else {
-        if (user && user.password === password) {
-          onLogin(user);
-        } else {
-          setError('Geçersiz Pilot ID veya Erişim Kodu.');
-        }
-      }
-    } catch (err: any) {
-      console.error(err);
-      setError(`Bağlantı Hatası: ${err.message || 'Supabase ayarları eksik.'}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-black p-4">
-      <div className="max-w-md w-full glass rounded-[2rem] p-10 border border-cyan-500/20 shadow-[0_0_100px_rgba(6,182,212,0.1)] text-left">
-        <div className="text-center mb-8">
-          <div className="w-20 h-20 bg-cyan-500/10 rounded-3xl mx-auto flex items-center justify-center border border-cyan-500/30 mb-6 rotate-3 hover:rotate-0 transition-transform">
-            <Globe className="text-cyan-400 w-10 h-10 animate-pulse" />
-          </div>
-          <h1 className="orbitron text-2xl font-black text-white tracking-tighter uppercase">Nebula Game v2.3</h1>
-          <p className="text-slate-500 text-xs mt-2 font-mono italic">Galaksinin İmparatoru Ol !</p>
-        </div>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <input required type="text" placeholder="Pilot ID" value={userId} onChange={e => setUserId(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none transition-all font-mono" />
-          <input required type="password" placeholder="Access Code" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none transition-all font-mono" />
-          {error && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[10px] text-center font-bold uppercase tracking-widest leading-relaxed">{error}</div>}
-          <button disabled={loading} className="w-full bg-cyan-600 hover:bg-cyan-500 py-4 rounded-xl font-black orbitron text-white shadow-lg shadow-cyan-900/20 active:scale-95 transition-all flex items-center justify-center">
-            {loading ? <RefreshCw className="animate-spin" size={20} /> : (isRegister ? 'INITIALIZE CORE' : 'ESTABLISH LINK')}
-          </button>
-        </form>
-        <button onClick={() => setIsRegister(!isRegister)} className="w-full mt-6 text-slate-500 text-xs hover:text-cyan-400 font-mono transition-colors">
-          {isRegister ? '> Back to Login' : '> Create New Galactic Profile'}
-        </button>
-      </div>
-    </div>
-  );
+const DBService = {
+  getUser: async (userId: string): Promise<UserData | null> => {
+    const { data, error } = await supabase.from('users').select('*').eq('id', userId).single();
+    if (error) return null;
+    return { id: data.id, password: data.password, gameState: data.game_state };
+  },
+  createUser: async (userId: string, pass: string, state: GameState): Promise<boolean> => {
+    const { error } = await supabase.from('users').insert([{ id: userId, password: pass, game_state: state }]);
+    return !error;
+  },
+  updateGameState: async (userId: string, state: GameState) => {
+    await supabase.from('users').update({ game_state: state }).eq('id', userId);
+  },
+  sendTrade: async (trade: Partial<TradeProposal>) => {
+    const { error } = await supabase.from('trades').insert([trade]);
+    return !error;
+  },
+  getTrades: async (userId: string): Promise<TradeProposal[]> => {
+    const { data, error } = await supabase.from('trades')
+      .select('*')
+      .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
+      .order('created_at', { ascending: false });
+    return data || [];
+  },
+  updateTradeStatus: async (tradeId: string, status: 'accepted' | 'rejected') => {
+    const { error } = await supabase.from('trades').update({ status }).eq('id', tradeId);
+    return !error;
+  }
 };
 
-// --- Main App ---
+// --- Yardımcı Fonksiyonlar ---
+const getXPToNextLevel = (level: number) => Math.floor(1000 * level * Math.pow(1.5, level - 1));
+const getMaxStorage = (level: number) => 5000 * level;
+const getStorageUpgradeCost = (level: number) => Math.floor(2500 * Math.pow(1.8, level - 1));
+const getAutoMinerCost = (level: number) => Math.floor(500 * Math.pow(1.5, level));
+const getPlasmaExtractorCost = (level: number) => Math.floor(2000 * Math.pow(1.7, level));
+const getCrystalRefineryCost = (level: number) => Math.floor(5000 * Math.pow(2.0, level));
+
+// --- Ana Uygulama ---
 const App = () => {
   const [currentUser, setCurrentUser] = useState<UserData | null>(null);
-  const [isInitializing, setIsInitializing] = useState(true);
   const [gameState, setGameState] = useState<GameState>(INITIAL_GAME_STATE);
-  const gameStateRef = useRef(gameState);
-  const [activeTab, setActiveTab] = useState<'mine' | 'shop' | 'tech' | 'market' | 'social' | 'trade'>('mine');
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [lastSaved, setLastSaved] = useState<string | null>(null);
-  const [activeEvent, setActiveEvent] = useState<CosmicEvent | null>(null);
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
-  const [marketListings, setMarketListings] = useState<MarketListing[]>([]);
-  const [floatingTexts, setFloatingTexts] = useState<{ id: number, text: string, x: number, y: number }[]>([]);
+  const [activeTab, setActiveTab] = useState<'command' | 'shipyard' | 'starmap' | 'market' | 'ai' | 'diplomacy'>('command');
+  const [aiAdvice, setAiAdvice] = useState<string>('');
+  const [aiLoading, setAiLoading] = useState(false);
+  
+  // Giriş Ekranı Durumu
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authLoading, setAuthLoading] = useState(false);
+  
+  // Takas Durumu
+  const [trades, setTrades] = useState<TradeProposal[]>([]);
+  const [targetPilotId, setTargetPilotId] = useState('');
+  const [tradeOffer, setTradeOffer] = useState({ credits: 0, iron: 0, plasma: 0 });
+  const [tradeRequest, setTradeRequest] = useState({ credits: 0, iron: 0, plasma: 0 });
+  const [isTrading, setIsTrading] = useState(false);
 
-  // Oturum Restorasyonu
   useEffect(() => {
-    const restoreSession = async () => {
-      const savedPilotId = localStorage.getItem('nebula_pilot_id');
-      if (savedPilotId) {
-        try {
-          const user = await DBService.getUser(savedPilotId);
-          if (user) {
-            handleLogin(user);
-          } else {
-            localStorage.removeItem('nebula_pilot_id');
-          }
-        } catch (e) {
-          console.error("Session restoration failed:", e);
-        }
-      }
-      setIsInitializing(false);
-    };
-    restoreSession();
+    const savedId = localStorage.getItem('nebula_pilot_id');
+    if (savedId) DBService.getUser(savedId).then(u => u && handleLogin(u));
   }, []);
 
   const handleLogin = (user: UserData) => {
     localStorage.setItem('nebula_pilot_id', user.id);
-    setCurrentUser(user); 
-    const safeState = {
-      ...INITIAL_GAME_STATE,
-      ...user.gameState,
-      resources: { ...INITIAL_GAME_STATE.resources, ...(user.gameState?.resources || {}) },
-      upgrades: { ...INITIAL_GAME_STATE.upgrades, ...(user.gameState?.upgrades || {}) },
-      technologies: { ...INITIAL_GAME_STATE.technologies, ...(user.gameState?.technologies || {}) },
-      market: { ...INITIAL_GAME_STATE.market, ...(user.gameState?.market || {}) },
-      missions: user.gameState?.missions || INITIAL_MISSIONS
-    };
-    setGameState(safeState); 
+    setCurrentUser(user);
+    setGameState({ ...INITIAL_GAME_STATE, ...user.gameState });
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('nebula_pilot_id');
-    setCurrentUser(null);
+  const handleAuth = async () => {
+    const pid = (document.getElementById('pid') as HTMLInputElement).value;
+    const pass = (document.getElementById('pass') as HTMLInputElement).value;
+    
+    if (!pid || !pass) {
+        alert("Lütfen tüm alanları doldurun.");
+        return;
+    }
+
+    setAuthLoading(true);
+    if (authMode === 'login') {
+        const user = await DBService.getUser(pid);
+        if (user && user.password === pass) {
+            handleLogin(user);
+        } else {
+            alert("Kimlik bilgileri hatalı veya kullanıcı bulunamadı.");
+        }
+    } else {
+        const existing = await DBService.getUser(pid);
+        if (existing) {
+            alert("Bu Pilot Kimliği zaten kullanımda.");
+        } else {
+            const success = await DBService.createUser(pid, pass, INITIAL_GAME_STATE);
+            if (success) {
+                alert("Pilot kaydı başarılı! Sisteme giriş yapılıyor.");
+                handleLogin({ id: pid, password: pass, gameState: INITIAL_GAME_STATE });
+            } else {
+                alert("Kayıt sırasında bir hata oluştu.");
+            }
+        }
+    }
+    setAuthLoading(false);
   };
 
-  useEffect(() => {
-    gameStateRef.current = gameState;
-  }, [gameState]);
+  // --- XP Kazanma ve Seviye Atlama Mantığı ---
+  const addXP = useCallback((amount: number) => {
+    setGameState(prev => {
+      let newXP = prev.xp + amount;
+      let newLevel = prev.level;
+      let xpRequired = getXPToNextLevel(newLevel);
 
-  const [p2pForm, setP2pForm] = useState<{ resource: keyof typeof BASE_MARKET_PRICES, amount: number, price: number }>({
-    resource: 'iron',
-    amount: 0,
-    price: 0
-  });
-
-  const taxRate = useMemo(() => 
-    Math.max(0.05, MARKET_TAX_BASE - (gameState.technologies.taxOptimization * 0.03)), 
-    [gameState.technologies.taxOptimization]
-  );
-
-  const currentStorageLimit = useMemo(() => 
-    STORAGE_LIMITS(gameState.upgrades.storageLevel, gameState.technologies.nanoStorage),
-    [gameState.upgrades.storageLevel, gameState.technologies.nanoStorage]
-  );
-
-  // --- Olay Sistemi ---
-  useEffect(() => {
-    if (!currentUser) return;
-    const eventInterval = setInterval(() => {
-      if (activeEvent) return;
-      if (Math.random() < 0.2) { 
-        const events: CosmicEvent[] = [
-          { id: '1', name: 'Güneş Fırtınası', description: 'Plazma üretimi %100 arttı!', effect: 'plasma_boost', duration: 30 },
-          { id: '2', name: 'Meteor Yağmuru', description: 'Demir fiyatları dip yaptı!', effect: 'iron_crash', duration: 30 },
-          { id: '3', name: 'Araştırma Patlaması', description: 'Veri üretimi %200 arttı!', effect: 'research_surge', duration: 30 }
-        ];
-        const selected = events[Math.floor(Math.random() * events.length)];
-        setActiveEvent(selected);
-        setTimeout(() => setActiveEvent(null), selected.duration * 1000);
+      while (newXP >= xpRequired) {
+        newXP -= xpRequired;
+        newLevel += 1;
+        xpRequired = getXPToNextLevel(newLevel);
       }
-    }, 45000);
-    return () => clearInterval(eventInterval);
-  }, [currentUser, activeEvent]);
 
-  // --- Üretim Döngüsü ---
+      return { ...prev, xp: newXP, level: newLevel };
+    });
+  }, []);
+
+  // --- Takasları Güncelleme ---
+  const refreshTrades = async () => {
+    if (!currentUser) return;
+    const data = await DBService.getTrades(currentUser.id);
+    setTrades(data);
+  };
+
+  useEffect(() => {
+    if (activeTab === 'diplomacy') {
+      refreshTrades();
+    }
+  }, [activeTab]);
+
+  // --- Oyun Çekirdek Döngüsü ---
   useEffect(() => {
     if (!currentUser) return;
     const interval = setInterval(() => {
       setGameState(prev => {
-        const now = Date.now();
-        const delta = (now - prev.lastUpdate) / 1000;
-        let plasmaMult = 1;
-        let researchMult = 1;
-        if (activeEvent?.effect === 'plasma_boost') plasmaMult = 2;
-        if (activeEvent?.effect === 'research_surge') researchMult = 3;
+        const delta = 1;
+        const maxCap = getMaxStorage(prev.upgrades.storageLevel);
+        
+        const miningBonus = (prev.fleet.miner || 0) * 2;
+        const defensePower = (prev.fleet.defender || 0) * 10;
+        
+        const baseThreat = 5 + (prev.credits / 10000);
+        const threatReduced = Math.max(0, baseThreat - (defensePower / 5));
 
-        return {
+        const sectorBonus = prev.sectors
+          .filter(s => s.controlled)
+          .reduce((acc, s) => acc + (s.resourceMultiplier * 0.5), 0);
+
+        const newState = {
           ...prev,
           resources: {
-            iron: Math.min(currentStorageLimit, prev.resources.iron + (prev.upgrades.autoMiners * 1 * delta)),
-            plasma: Math.min(currentStorageLimit, prev.resources.plasma + (prev.upgrades.plasmaExtractors * 0.5 * delta * plasmaMult)),
-            crystal: Math.min(currentStorageLimit, prev.resources.crystal + (prev.upgrades.crystalRefineries * 0.1 * delta)),
-            dataBits: prev.resources.dataBits + (prev.upgrades.researchHubs * 0.2 * delta * researchMult)
+            ...prev.resources,
+            iron: Math.min(maxCap, prev.resources.iron + (prev.upgrades.autoMiners * 0.5 + miningBonus + sectorBonus) * delta),
+            plasma: Math.min(maxCap, prev.resources.plasma + (prev.upgrades.plasmaExtractors * 0.1 + (miningBonus * 0.1)) * delta),
+            crystal: Math.min(maxCap, prev.resources.crystal + (prev.upgrades.crystalRefineries * 0.02) * delta),
           },
-          lastUpdate: now
+          threatLevel: Math.min(100, threatReduced),
+          lastUpdate: Date.now()
         };
+
+        if (Math.floor(Date.now() / 1000) % 15 === 0) {
+            DBService.updateGameState(currentUser.id, newState);
+        }
+
+        return newState;
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [currentUser, currentStorageLimit, activeEvent]);
-
-  // --- Market Döngüsü ---
-  useEffect(() => {
-    if (!currentUser) return;
-    const marketInterval = setInterval(() => {
-      setGameState(prev => {
-        const newMarket = { ...prev.market };
-        (Object.keys(BASE_MARKET_PRICES) as Array<keyof typeof BASE_MARKET_PRICES>).forEach(key => {
-          const base = (BASE_MARKET_PRICES as any)[key];
-          const current = prev.market[key]?.price || base;
-          let eventModifier = 1;
-          if (activeEvent?.effect === 'iron_crash' && key === 'iron') eventModifier = 0.4;
-          const demandFactor = 0.5 + (Math.random() * ((prev.market[key]?.demand || 50) / 50));
-          const nextPrice = Math.max(0.5, Math.round(base * demandFactor * (0.8 + Math.random() * 0.4) * eventModifier * 10) / 10);
-          let trend: 'up' | 'down' | 'stable' = 'stable';
-          if (nextPrice > current) trend = 'up';
-          else if (nextPrice < current) trend = 'down';
-          newMarket[key] = { price: nextPrice, trend, demand: Math.max(10, Math.min(100, (prev.market[key]?.demand || 50) + (Math.random() * 20 - 10))) };
-        });
-        return { ...prev, market: newMarket };
-      });
-    }, 15000);
-    return () => clearInterval(marketInterval);
-  }, [currentUser, activeEvent]);
-
-  // --- Market Sync ---
-  const syncGlobalData = useCallback(() => {
-    if (activeTab === 'social') DBService.getLeaderboard().then(setLeaderboard);
-    if (activeTab === 'trade') DBService.getListings().then(setMarketListings);
-  }, [activeTab]);
-
-  useEffect(() => {
-    syncGlobalData();
-    const syncInterval = setInterval(syncGlobalData, 15000);
-    return () => clearInterval(syncInterval);
-  }, [activeTab, syncGlobalData]);
-
-  // --- Auto-Save ---
-  useEffect(() => {
-    if (!currentUser) return;
-    const saveInterval = setInterval(async () => {
-      setIsSaving(true);
-      const error: any = await DBService.updateGameState(currentUser.id, gameStateRef.current);
-      setIsSaving(false);
-      if (error) {
-        setSaveError(error.message || "Unknown persistence error");
-      } else {
-        setSaveError(null);
-        setLastSaved(new Date().toLocaleTimeString());
-      }
-    }, 20000);
-    return () => clearInterval(saveInterval);
   }, [currentUser]);
 
-  if (isInitializing) {
-    return (
-      <div className="min-h-screen bg-black flex flex-col items-center justify-center gap-6">
-        <div className="w-24 h-24 bg-cyan-500/10 rounded-full border border-cyan-500/30 flex items-center justify-center animate-pulse">
-           <Globe className="text-cyan-400 w-12 h-12" />
+  const handleSendTrade = async () => {
+    if (!currentUser || !targetPilotId) return;
+    if (targetPilotId === currentUser.id) {
+        alert("Kendinizle takas yapamazsınız.");
+        return;
+    }
+
+    if (gameState.credits < tradeOffer.credits || gameState.resources.iron < tradeOffer.iron || gameState.resources.plasma < tradeOffer.plasma) {
+        alert("Yetersiz kaynak.");
+        return;
+    }
+
+    setIsTrading(true);
+    const success = await DBService.sendTrade({
+        sender_id: currentUser.id,
+        receiver_id: targetPilotId,
+        offer: tradeOffer,
+        request: tradeRequest,
+        status: 'pending'
+    });
+
+    if (success) {
+        setGameState(prev => ({
+            ...prev,
+            credits: prev.credits - tradeOffer.credits,
+            resources: {
+                ...prev.resources,
+                iron: prev.resources.iron - tradeOffer.iron,
+                plasma: prev.resources.plasma - tradeOffer.plasma
+            }
+        }));
+        alert("Takas teklifi gönderildi.");
+        setTradeOffer({ credits: 0, iron: 0, plasma: 0 });
+        setTradeRequest({ credits: 0, iron: 0, plasma: 0 });
+        setTargetPilotId('');
+        refreshTrades();
+    } else {
+        alert("Teklif gönderilemedi. Pilot ID hatalı olabilir.");
+    }
+    setIsTrading(false);
+  };
+
+  const handleAcceptTrade = async (trade: TradeProposal) => {
+    if (!currentUser) return;
+    
+    if (gameState.credits < trade.request.credits || gameState.resources.iron < trade.request.iron || gameState.resources.plasma < trade.request.plasma) {
+        alert("Yetersiz kaynak. Karşı tarafın istediği kaynaklara sahip değilsiniz.");
+        return;
+    }
+
+    setIsTrading(true);
+    const success = await DBService.updateTradeStatus(trade.id, 'accepted');
+    if (success) {
+        setGameState(prev => ({
+            ...prev,
+            credits: prev.credits - trade.request.credits + trade.offer.credits,
+            resources: {
+                ...prev.resources,
+                iron: prev.resources.iron - trade.request.iron + trade.offer.iron,
+                plasma: prev.resources.plasma - trade.request.plasma + trade.offer.plasma
+            }
+        }));
+        addXP(1000);
+        alert("Takas kabul edildi ve kaynaklar aktarıldı!");
+        refreshTrades();
+    }
+    setIsTrading(false);
+  };
+
+  const handleRejectTrade = async (trade: TradeProposal) => {
+    if (!currentUser) return;
+    const success = await DBService.updateTradeStatus(trade.id, 'rejected');
+    if (success) {
+        if (trade.sender_id === currentUser.id) {
+            setGameState(prev => ({
+                ...prev,
+                credits: prev.credits + trade.offer.credits,
+                resources: {
+                    ...prev.resources,
+                    iron: prev.resources.iron + trade.offer.iron,
+                    plasma: prev.resources.plasma + trade.offer.plasma
+                }
+            }));
+        }
+        alert("Takas işlemi sonlandırıldı.");
+        refreshTrades();
+    }
+  };
+
+  const buildShip = (shipId: string) => {
+    const ship = SHIP_TYPES.find(s => s.id === shipId)!;
+    if (gameState.credits >= ship.cost.credits && gameState.resources.iron >= ship.cost.iron && gameState.resources.plasma >= ship.cost.plasma) {
+      setGameState(prev => ({
+        ...prev,
+        credits: prev.credits - ship.cost.credits,
+        resources: {
+          ...prev.resources,
+          iron: prev.resources.iron - ship.cost.iron,
+          plasma: prev.resources.plasma - ship.cost.plasma
+        },
+        fleet: { ...prev.fleet, [shipId]: (prev.fleet[shipId] || 0) + 1 }
+      }));
+      addXP(ship.type === 'defender' ? 500 : 300);
+    }
+  };
+
+  // --- Yükseltme İşleyicileri ---
+  const handleUpgrade = (type: 'storage' | 'autoMiner' | 'plasma' | 'crystal') => {
+    let cost = 0;
+    switch(type) {
+        case 'storage': cost = getStorageUpgradeCost(gameState.upgrades.storageLevel); break;
+        case 'autoMiner': cost = getAutoMinerCost(gameState.upgrades.autoMiners); break;
+        case 'plasma': cost = getPlasmaExtractorCost(gameState.upgrades.plasmaExtractors); break;
+        case 'crystal': cost = getCrystalRefineryCost(gameState.upgrades.crystalRefineries); break;
+    }
+
+    if (gameState.credits >= cost) {
+        setGameState(prev => ({
+            ...prev,
+            credits: prev.credits - cost,
+            upgrades: {
+                ...prev.upgrades,
+                storageLevel: type === 'storage' ? prev.upgrades.storageLevel + 1 : prev.upgrades.storageLevel,
+                autoMiners: type === 'autoMiner' ? prev.upgrades.autoMiners + 1 : prev.upgrades.autoMiners,
+                plasmaExtractors: type === 'plasma' ? prev.upgrades.plasmaExtractors + 1 : prev.upgrades.plasmaExtractors,
+                crystalRefineries: type === 'crystal' ? prev.upgrades.crystalRefineries + 1 : prev.upgrades.crystalRefineries,
+            }
+        }));
+        addXP(Math.floor(cost / 10));
+    }
+  };
+
+  const deployToSector = (sectorId: string) => {
+    const sector = gameState.sectors.find(s => s.id === sectorId)!;
+    if (gameState.fleet.defender >= 5 && !sector.controlled) {
+      setGameState(prev => ({
+        ...prev,
+        sectors: prev.sectors.map(s => s.id === sectorId ? { ...s, controlled: true } : s),
+        fleet: { ...prev.fleet, defender: prev.fleet.defender - 5 } 
+      }));
+      addXP(2500);
+      alert(`Sektör ${sector.name} temizlendi ve ele geçirildi! Komuta Rütbesi arttı.`);
+    } else if (sector.controlled) {
+      alert("Sektör zaten kontrol altında.");
+    } else {
+      alert("Başarılı bir işgal için en az 5 Kalkan Muhribi gereklidir.");
+    }
+  };
+
+  const sellResources = (key: string, data: any) => {
+    const amt = (gameState.resources as any)[key];
+    if (amt <= 0) return;
+    
+    const creditsEarned = amt * data.price;
+    setGameState(prev => ({
+      ...prev,
+      credits: prev.credits + creditsEarned,
+      resources: { ...prev.resources, [key]: 0 }
+    }));
+    
+    addXP(Math.floor(creditsEarned / 10));
+  };
+
+  const getStrategicAdvice = async () => {
+    setAiLoading(true);
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    try {
+      const prompt = `Amiral Nebula olarak davran. Mevcut Komuta Rütbesi: ${gameState.level}. Filo Durumu: ${JSON.stringify(gameState.fleet)}. 
+      Otomasyon Durumu: ${gameState.upgrades.autoMiners} madenci, ${gameState.upgrades.plasmaExtractors} plazma çıkarıcı.
+      Tehdit Seviyesi: %${gameState.threatLevel}. Kredi: ${gameState.credits}. 
+      Lütfen Türkçe olarak, sert bir komutan edasıyla 2 cümlelik yüksek öncelikli askeri hedef ver.`;
+      
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt,
+      });
+      setAiAdvice(response.text || "Sektör taranıyor... sinyal yok.");
+    } catch (e) {
+      setAiAdvice("Korsan sinyalleri nedeniyle iletişim kesildi.");
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  if (!currentUser) return (
+    <div className="min-h-screen flex items-center justify-center bg-[#020617] p-6 relative overflow-hidden">
+      <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-cyan-500/10 rounded-full blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-indigo-500/10 rounded-full blur-[120px] pointer-events-none" />
+      
+      <div className="glass p-10 md:p-14 rounded-[3.5rem] border border-cyan-500/20 text-center max-w-md w-full shadow-[0_0_80px_rgba(6,182,212,0.1)] relative z-10">
+        <Globe className="w-20 h-20 text-cyan-400 mx-auto mb-8 animate-pulse" />
+        <h1 className="orbitron text-3xl font-black text-white mb-2 uppercase italic tracking-tighter">Nebula <span className="text-cyan-400">Komutanlığı</span></h1>
+        <p className="text-[10px] font-mono text-slate-500 uppercase tracking-[0.5em] mb-10">Sektör 4-B | Galaktik Erişim</p>
+        
+        <div className="flex bg-slate-900/80 p-1.5 rounded-2xl mb-8 border border-white/5 shadow-inner">
+            <button onClick={() => setAuthMode('login')} className={`flex-1 py-3 rounded-xl orbitron text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${authMode === 'login' ? 'bg-cyan-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>
+                <LogIn size={14}/> Giriş Yap
+            </button>
+            <button onClick={() => setAuthMode('signup')} className={`flex-1 py-3 rounded-xl orbitron text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${authMode === 'signup' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>
+                <UserPlus size={14}/> Üye Ol
+            </button>
         </div>
-        <div className="flex items-center gap-3 text-cyan-400 font-mono text-xs uppercase tracking-[0.3em]">
-          <Loader2 className="animate-spin" size={16} /> Connecting to Nebula Grid...
+
+        <div className="space-y-5">
+           <div className="relative group">
+              <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-cyan-400 transition-colors" size={18} />
+              <input id="pid" type="text" placeholder="Pilot Kimliği" className="w-full bg-slate-950 border border-slate-800 rounded-2xl pl-12 pr-4 py-4 text-cyan-50 focus:border-cyan-500 outline-none font-mono transition-all text-sm" />
+           </div>
+           <div className="relative group">
+              <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-cyan-400 transition-colors" size={18} />
+              <input id="pass" type="password" placeholder="Erişim Kodu" className="w-full bg-slate-950 border border-slate-800 rounded-2xl pl-12 pr-4 py-4 text-cyan-50 focus:border-cyan-500 outline-none font-mono transition-all text-sm" />
+           </div>
+           
+           <button onClick={handleAuth} disabled={authLoading} className={`w-full py-5 rounded-2xl font-black orbitron text-white uppercase tracking-widest transition-all flex items-center justify-center gap-3 shadow-2xl ${authMode === 'login' ? 'bg-gradient-to-r from-cyan-600 to-blue-700 hover:from-cyan-500 hover:to-blue-600' : 'bg-gradient-to-r from-indigo-600 to-purple-700 hover:from-indigo-500 hover:to-purple-600'}`}>
+              {authLoading ? <Loader2 className="animate-spin" size={20} /> : authMode === 'login' ? <><LogIn size={20}/> Sistemi Başlat</> : <><UserPlus size={20}/> Pilot Kaydı Oluştur</>}
+           </button>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
 
-  if (!currentUser) return <AuthScreen onLogin={handleLogin} />;
-
-  const mineManual = (e: React.MouseEvent) => {
-    if (gameState.resources.iron < currentStorageLimit) {
-      const power = gameState.upgrades.pickaxePower + (gameState.technologies.neuralMining * 2);
-      const newText = { id: Date.now(), text: `+${power} Demir`, x: e.clientX, y: e.clientY };
-      setFloatingTexts(prev => [...prev, newText]);
-      setTimeout(() => setFloatingTexts(prev => prev.filter(t => t.id !== newText.id)), 1000);
-      setGameState(prev => ({
-        ...prev,
-        resources: { ...prev.resources, iron: Math.min(currentStorageLimit, prev.resources.iron + power) }
-      }));
-    }
-  };
-
-  const sellResource = (type: keyof typeof BASE_MARKET_PRICES) => {
-    const amount = (gameState.resources as any)[type];
-    if (amount <= 0) return;
-    const taxedProfit = amount * (gameState.market[type]?.price || 0) * (1 - taxRate);
-    setGameState(prev => ({
-      ...prev,
-      credits: prev.credits + taxedProfit,
-      resources: { ...prev.resources, [type]: 0 }
-    }));
-  };
-
-  const buyUpgrade = (key: keyof typeof gameState.upgrades) => {
-    const cost = (UPGRADE_COSTS as any)[key]((gameState.upgrades as any)[key]);
-    if (gameState.credits >= cost) {
-      setGameState(prev => ({
-        ...prev,
-        credits: prev.credits - cost,
-        upgrades: { ...prev.upgrades, [key]: (prev.upgrades as any)[key] + 1 }
-      }));
-    }
-  };
-
-  const researchTech = (key: keyof TechState) => {
-    const cost = (TECH_COSTS as any)[key](gameState.technologies[key]);
-    if (gameState.resources.dataBits >= cost) {
-      setGameState(prev => ({
-        ...prev,
-        resources: { ...prev.resources, dataBits: prev.resources.dataBits - cost },
-        technologies: { ...prev.technologies, [key]: prev.technologies[key] + 1 }
-      }));
-    }
-  };
-
-  const handlePostTrade = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const { resource, amount, price } = p2pForm;
-    if (gameState.resources[resource] < amount || amount <= 0 || price <= 0) return;
-    setGameState(prev => ({
-      ...prev,
-      resources: { ...prev.resources, [resource]: prev.resources[resource] - amount }
-    }));
-    await DBService.postListing({ seller_id: currentUser.id, resource_type: resource, amount, price });
-    syncGlobalData();
-    setP2pForm(prev => ({ ...prev, amount: 0, price: 0 }));
-  };
-
-  const handleBuyListing = async (listing: MarketListing) => {
-    if (gameState.credits < listing.price) return;
-    if (gameState.resources[listing.resource_type] + listing.amount > currentStorageLimit) {
-      alert("Depo dolu! Kapasiteyi artır.");
-      return;
-    }
-    try {
-      await DBService.purchaseListing(listing, currentUser.id);
-      setGameState(prev => ({
-        ...prev,
-        credits: prev.credits - listing.price,
-        resources: { ...prev.resources, [listing.resource_type]: prev.resources[listing.resource_type] + listing.amount }
-      }));
-      syncGlobalData();
-    } catch (err: any) {
-      alert("Hata: " + (err.message || "Ticaret işlemi başarısız."));
-    }
-  };
-
-  const handleCancelListing = async (listing: MarketListing) => {
-    await DBService.cancelListing(listing.id);
-    setGameState(prev => ({
-      ...prev,
-      resources: { ...prev.resources, [listing.resource_type]: prev.resources[listing.resource_type] + listing.amount }
-    }));
-    syncGlobalData();
-  };
-
-  const forceSync = async () => {
-    setIsSaving(true);
-    const error: any = await DBService.updateGameState(currentUser.id, gameStateRef.current);
-    setIsSaving(false);
-    if (error) {
-      setSaveError(error.message);
-      let diagMessage = "Supabase bağlantı hatası.\n\n";
-      if (error.message.includes("updated_at")) diagMessage += "Hata: 'updated_at' sütunu bulunamadı. Lütfen SQL scriptini çalıştırın.";
-      else if (error.message.includes("users")) diagMessage += "Hata: 'users' tablosu bulunamadı. Lütfen SQL scriptini çalıştırın.";
-      else if (error.message.includes("permission") || error.message.includes("policy")) diagMessage += "Hata: RLS (Row Level Security) kısıtlaması. Lütfen dashboard'dan RLS'i devre dışı bırakın.";
-      else diagMessage += `Hata Detayı: ${error.message}`;
-      alert(diagMessage);
-    } else {
-      setSaveError(null);
-      setLastSaved(new Date().toLocaleTimeString());
-      alert("Veriler başarıyla buluta senkronize edildi.");
-    }
-  };
+  const xpProgress = (gameState.xp / getXPToNextLevel(gameState.level)) * 100;
+  const currentMaxStorage = getMaxStorage(gameState.upgrades.storageLevel);
 
   return (
-    <div className="min-h-screen bg-[#020617] text-slate-100 p-4 md:p-8 font-sans selection:bg-cyan-500/30 overflow-x-hidden text-left">
-      {floatingTexts.map(t => (
-        <div key={t.id} className="fixed pointer-events-none animate-bounce text-cyan-400 orbitron text-xs font-black z-50" style={{ left: t.x, top: t.y }}>
-          {t.text}
-        </div>
-      ))}
-
+    <div className="min-h-screen bg-[#020617] text-slate-100 p-4 md:p-8 font-sans selection:bg-cyan-500/30">
       <div className="max-w-7xl mx-auto flex flex-col gap-6">
-        <header className="glass rounded-3xl p-6 flex flex-col md:flex-row justify-between items-center gap-4 border border-white/5 shadow-2xl relative">
-          <div className="flex items-center gap-6">
-            <div className="p-4 bg-gradient-to-br from-cyan-600 to-blue-700 rounded-2xl shadow-lg shadow-cyan-900/20">
-              <BarChart3 className="w-8 h-8 text-white" />
+        
+        {/* HUD */}
+        <header className="glass rounded-[2rem] p-8 border border-white/5 shadow-2xl flex flex-col md:flex-row justify-between items-center gap-8 relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-1 bg-slate-900/50">
+             <div className="h-full bg-cyan-500 transition-all duration-500 shadow-[0_0_10px_rgba(6,182,212,0.8)]" style={{ width: `${xpProgress}%` }} />
+          </div>
+
+          <div className="flex items-center gap-8">
+            <div className="relative">
+              <div className="w-20 h-20 bg-gradient-to-br from-blue-600 to-indigo-800 rounded-2xl flex items-center justify-center shadow-lg border-2 border-white/10">
+                <Shield className="text-white w-10 h-10" />
+              </div>
+              <div className="absolute -bottom-2 -right-2 bg-cyan-500 text-slate-950 text-[10px] font-black w-8 h-8 rounded-full border-4 border-slate-950 flex items-center justify-center orbitron shadow-xl">
+                 {gameState.level}
+              </div>
             </div>
             <div>
-              <h1 className="orbitron text-2xl font-black tracking-tight text-white uppercase italic">Nebula <span className="text-cyan-400">Game</span></h1>
-              <div className="text-[10px] font-mono text-slate-500 tracking-[0.2em] flex flex-col gap-1 mt-1">
-                <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 ${saveError ? 'bg-red-500 animate-pulse' : isSaving ? 'bg-yellow-500 animate-pulse' : 'bg-green-500'} rounded-full`} /> 
-                  <span className={saveError ? 'text-red-500 font-bold' : ''}>
-                    {saveError ? 'CLOUD SYNC FAILED!' : isSaving ? 'SYNCING...' : 'SECURE LINK ACTIVE'}
-                  </span> 
-                  <span className="text-slate-700">|</span> 
-                  PILOT: <span className="text-cyan-400">{currentUser.id}</span>
-                </div>
-                {lastSaved && !saveError && <p className="text-[8px] text-slate-600 uppercase">Last Sync: {lastSaved}</p>}
-                {saveError && <p className="text-[8px] text-red-500/80 font-mono uppercase max-w-[200px] truncate" title={saveError}>ERR: {saveError}</p>}
+              <div className="flex items-center gap-3 text-left">
+                 <h1 className="orbitron text-2xl font-black uppercase italic tracking-tighter">Amiral <span className="text-cyan-400">{currentUser.id}</span></h1>
+                 <span className="text-[10px] bg-white/5 px-2 py-1 rounded border border-white/10 text-slate-400 font-black uppercase">Rütbe {gameState.level}</span>
+              </div>
+              
+              <div className="flex flex-col gap-2 mt-3 text-left">
+                 <div className="flex justify-between items-end text-[9px] font-mono text-slate-500 uppercase tracking-widest">
+                    <span>XP: {gameState.xp.toLocaleString()} / {getXPToNextLevel(gameState.level).toLocaleString()}</span>
+                    <span>Tehdit: %{gameState.threatLevel.toFixed(1)}</span>
+                 </div>
+                 <div className="flex items-center gap-3">
+                    <div className="h-2 w-48 bg-slate-900 rounded-full overflow-hidden border border-white/5 p-[1px]">
+                       <div className="h-full bg-red-600 transition-all duration-1000 shadow-[0_0_10px_rgba(220,38,38,0.5)]" style={{ width: `${gameState.threatLevel}%` }} />
+                    </div>
+                    <div className={`w-2 h-2 rounded-full ${gameState.threatLevel > 50 ? 'bg-red-500 animate-ping' : 'bg-green-500'}`} />
+                 </div>
               </div>
             </div>
           </div>
-
-          <div className="flex items-center gap-3">
-            <div className="bg-slate-900/80 px-6 py-3 rounded-2xl border border-yellow-500/20 shadow-inner flex flex-col items-end">
-              <span className="text-[9px] font-black text-yellow-600 uppercase tracking-widest">Global Balance</span>
-              <span className="orbitron text-lg font-bold text-yellow-400">{Math.floor(gameState.credits).toLocaleString()} <span className="text-[10px]">CR</span></span>
-            </div>
-            <button onClick={handleLogout} className="p-4 hover:bg-red-500/10 rounded-2xl text-slate-600 hover:text-red-400 transition-all flex items-center gap-2 group">
-              <LogOut size={20} />
-              <span className="hidden group-hover:inline text-[10px] orbitron font-bold">DISCONNECT</span>
-            </button>
+          
+          <div className="flex gap-4">
+             <div className="bg-slate-900/80 px-8 py-4 rounded-3xl border border-yellow-500/20 text-right shadow-inner">
+                <p className="text-[10px] font-black text-yellow-600 uppercase tracking-widest mb-1">Savaş Kasası</p>
+                <p className="orbitron text-2xl font-bold text-yellow-400">{Math.floor(gameState.credits).toLocaleString()} <span className="text-xs">CR</span></p>
+             </div>
+             <button onClick={() => { localStorage.removeItem('nebula_pilot_id'); window.location.reload(); }} className="p-5 bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-400 rounded-2xl transition-all border border-white/5">
+                <LogOut size={24} />
+             </button>
           </div>
         </header>
 
-        {saveError && (
-          <div className="bg-red-500/10 border border-red-500/20 p-3 rounded-2xl flex items-center gap-3 animate-pulse">
-            <AlertCircle size={18} className="text-red-500" />
-            <div className="flex-1 text-[10px] font-mono text-red-400 uppercase tracking-tight">
-              Cloud synchronization suspended. <span className="font-bold underline cursor-help" onClick={() => alert("Hata: 'updated_at' sütunu bulunamadı. Supabase SQL Editor'de şunu çalıştırın: ALTER TABLE users ADD COLUMN updated_at timestamp with time zone DEFAULT now();")}>Click for diagnostics.</span>
-            </div>
-            <button onClick={forceSync} className="px-3 py-1 bg-red-500 text-white text-[9px] orbitron font-black rounded-lg hover:bg-red-400 transition-colors">
-              RETRY SYNC
-            </button>
-          </div>
-        )}
-
-        <section className="bg-cyan-950/20 border-y border-cyan-500/10 p-4 overflow-hidden relative">
-          <div className="flex items-center gap-8 whitespace-nowrap animate-marquee">
-            {(Object.entries(gameState.market || {}) as [string, MarketState[string]][]).map(([key, val]) => (
-              <div key={key} className="flex items-center gap-3 font-mono text-xs uppercase tracking-tighter">
-                <span className="text-slate-500">{key}:</span>
-                <span className={val?.trend === 'up' ? 'text-green-400' : 'text-red-400'}>
-                  {val?.price || 0} CR {val?.trend === 'up' ? '↑' : '↓'}
-                </span>
-                <div className="w-12 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                  <div className="h-full bg-cyan-500/50" style={{ width: `${val?.demand || 50}%` }} />
-                </div>
-              </div>
-            ))}
-            <span className="text-slate-600 ml-10">| PATCH 2.9.1 | FIX: UPDATED_AT SCHEMA | AUTO-SAVE: 20s | CONNECTION: STABLE |</span>
-          </div>
-        </section>
-
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          <aside className="lg:col-span-1 flex flex-col gap-6">
-             <div className="glass rounded-3xl p-6 border border-yellow-500/20 bg-yellow-500/5">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="orbitron text-xs font-black text-yellow-500 uppercase tracking-widest">Aktif Görevler</h3>
-                  <Target size={16} className="text-yellow-500" />
-                </div>
-                <div className="space-y-3 text-left">
-                  {(gameState.missions || []).map(m => (
-                    <div key={m.id} className={`p-3 rounded-xl border ${m.completed ? 'bg-green-500/10 border-green-500/20 opacity-50' : 'bg-black/40 border-white/5'}`}>
-                      <div className="flex justify-between items-center mb-1">
-                        <span className="text-[9px] font-black orbitron text-white">{m.title}</span>
-                        {m.completed && <Star size={10} className="text-yellow-400 fill-yellow-400" />}
-                      </div>
-                      <p className="text-[8px] text-slate-500 font-mono italic leading-normal">{m.description}</p>
-                    </div>
-                  ))}
-                </div>
-             </div>
-             
-             
-          </aside>
-
-          <main className="lg:col-span-3 flex flex-col gap-6">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-               <ResourceCard icon={<Database />} label="Iron" val={gameState.resources.iron} color="text-slate-400" limit={currentStorageLimit} />
-               <ResourceCard icon={<Zap />} label="Plasma" val={gameState.resources.plasma} color="text-purple-400" limit={currentStorageLimit} />
-               <ResourceCard icon={<Rocket />} label="Crystal" val={gameState.resources.crystal} color="text-cyan-400" limit={currentStorageLimit} />
-               <ResourceCard icon={<Binary />} label="Data Bits" val={gameState.resources.dataBits} color="text-blue-400" />
-            </div>
-
-            <nav className="flex bg-slate-900/50 p-1 rounded-2xl self-start border border-white/5 overflow-x-auto max-w-full no-scrollbar">
-              <NavBtn active={activeTab === 'mine'} onClick={() => setActiveTab('mine')} icon={<Pickaxe />} label="Mine" />
-              <NavBtn active={activeTab === 'shop'} onClick={() => setActiveTab('shop')} icon={<ShoppingBag />} label="Upgrades" />
-              <NavBtn active={activeTab === 'tech'} onClick={() => setActiveTab('tech')} icon={<Microchip />} label="Research" />
-              <NavBtn active={activeTab === 'market'} onClick={() => setActiveTab('market')} icon={<BarChart3 />} label="Market" />
-              <NavBtn active={activeTab === 'trade'} onClick={() => setActiveTab('trade')} icon={<ArrowRightLeft />} label="Trade" />
-              <NavBtn active={activeTab === 'social'} onClick={() => setActiveTab('social')} icon={<Trophy />} label="Social" />
-            </nav>
-
-            <div className="flex-1 min-h-[500px]">
-              {activeTab === 'mine' && (
-                <div className="flex flex-col items-center justify-center min-h-[400px] animate-in fade-in zoom-in duration-500">
-                  <div className="relative group mb-12">
-                     <div className="absolute -inset-10 bg-cyan-500/10 rounded-full blur-3xl group-hover:bg-cyan-500/20 transition-all animate-pulse" />
-                     <button onClick={mineManual} className="relative w-56 h-56 md:w-72 md:h-72 glass border-4 border-slate-700/50 rounded-full flex flex-col items-center justify-center gap-3 hover:scale-105 active:scale-90 transition-all shadow-2xl overflow-hidden">
-                        <div className="absolute inset-0 border-[20px] border-t-cyan-500/20 border-r-transparent border-b-transparent border-l-transparent rounded-full animate-spin-slow" />
-                        <Pickaxe size={48} className="text-cyan-400" />
-                        <span className="orbitron text-sm font-black text-white tracking-widest uppercase">Kazmaya Başla</span>
-                        <span className="font-mono text-[10px] text-cyan-600 uppercase tracking-widest">Manuel Kazım</span>
-                     </button>
-                  </div>
-                  <div className="grid grid-cols-3 gap-8 text-center">
-                    <ProductionStat label="Iron" val={gameState.upgrades.autoMiners} />
-                    <ProductionStat label="Plasma" val={gameState.upgrades.plasmaExtractors * 0.5 * (activeEvent?.effect === 'plasma_boost' ? 2 : 1)} />
-                    <ProductionStat label="Data" val={gameState.upgrades.researchHubs * 0.2 * (activeEvent?.effect === 'research_surge' ? 3 : 1)} />
-                  </div>
-                </div>
-              )}
-              
-              {activeTab === 'shop' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in slide-in-from-bottom-4 duration-500">
-                  <ShopItem title="Hyper-Pickaxe" lvl={gameState.upgrades.pickaxePower} cost={UPGRADE_COSTS.pickaxePower(gameState.upgrades.pickaxePower)} canBuy={gameState.credits >= UPGRADE_COSTS.pickaxePower(gameState.upgrades.pickaxePower)} onBuy={() => buyUpgrade('pickaxePower')} icon={<Pickaxe className="text-cyan-400" />} />
-                  <ShopItem title="Mining Drones" lvl={gameState.upgrades.autoMiners} cost={UPGRADE_COSTS.autoMiners(gameState.upgrades.autoMiners)} canBuy={gameState.credits >= UPGRADE_COSTS.autoMiners(gameState.upgrades.autoMiners)} onBuy={() => buyUpgrade('autoMiners')} icon={<Cpu className="text-slate-400" />} />
-                  <ShopItem title="Plasma Collector" lvl={gameState.upgrades.plasmaExtractors} cost={UPGRADE_COSTS.plasmaExtractors(gameState.upgrades.plasmaExtractors)} canBuy={gameState.credits >= UPGRADE_COSTS.plasmaExtractors(gameState.upgrades.plasmaExtractors)} onBuy={() => buyUpgrade('plasmaExtractors')} icon={<Zap className="text-purple-400" />} />
-                  <ShopItem title="Research Node" lvl={gameState.upgrades.researchHubs} cost={UPGRADE_COSTS.researchHubs(gameState.upgrades.researchHubs)} canBuy={gameState.credits >= UPGRADE_COSTS.researchHubs(gameState.upgrades.researchHubs)} onBuy={() => buyUpgrade('researchHubs')} icon={<Binary className="text-blue-400" />} />
-                  <ShopItem title="Cargo Terminal" lvl={gameState.upgrades.storageLevel} cost={UPGRADE_COSTS.storage(gameState.upgrades.storageLevel)} canBuy={gameState.credits >= UPGRADE_COSTS.storage(gameState.upgrades.storageLevel)} onBuy={() => buyUpgrade('storageLevel')} icon={<Database className="text-orange-400" />} />
-                </div>
-              )}
-
-              {activeTab === 'tech' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in zoom-in duration-500">
-                  <TechItem title="Market AI Interface" desc="Reveals demand sensitivity metrics." lvl={gameState.technologies.marketAI} cost={TECH_COSTS.marketAI(gameState.technologies.marketAI)} canBuy={gameState.resources.dataBits >= TECH_COSTS.marketAI(gameState.technologies.marketAI)} onBuy={() => researchTech('marketAI')} icon={<TrendingUp />} />
-                  <TechItem title="Trade Tax Optimization" desc="Reduces galactic sales tax by 3%." lvl={gameState.technologies.taxOptimization} cost={TECH_COSTS.taxOptimization(gameState.technologies.taxOptimization)} canBuy={gameState.resources.dataBits >= TECH_COSTS.taxOptimization(gameState.technologies.taxOptimization)} onBuy={() => researchTech('taxOptimization')} icon={<ArrowUpRight />} />
-                  <TechItem title="Nano-Storage Clusters" desc="Increases capacity via compression." lvl={gameState.technologies.nanoStorage} cost={TECH_COSTS.nanoStorage(gameState.technologies.nanoStorage)} canBuy={gameState.resources.dataBits >= TECH_COSTS.nanoStorage(gameState.technologies.nanoStorage)} onBuy={() => researchTech('nanoStorage')} icon={<Settings />} />
-                  <TechItem title="Neural Click Link" desc="Massive boost to manual mining." lvl={gameState.technologies.neuralMining} cost={TECH_COSTS.neuralMining(gameState.technologies.neuralMining)} canBuy={gameState.resources.dataBits >= TECH_COSTS.neuralMining(gameState.technologies.neuralMining)} onBuy={() => researchTech('neuralMining')} icon={<Target />} />
-                </div>
-              )}
-
-              {activeTab === 'market' && (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-in slide-in-from-right-4 duration-500">
-                  <MarketCard resource="iron" data={gameState.market.iron} amount={gameState.resources.iron} onSell={() => sellResource('iron')} icon={<Database />} tax={taxRate} showDemand={gameState.technologies.marketAI > 0} />
-                  <MarketCard resource="plasma" data={gameState.market.plasma} amount={gameState.resources.plasma} onSell={() => sellResource('plasma')} icon={<Zap />} tax={taxRate} showDemand={gameState.technologies.marketAI > 0} />
-                  <MarketCard resource="crystal" data={gameState.market.crystal} amount={gameState.resources.crystal} onSell={() => sellResource('crystal')} icon={<Rocket />} tax={taxRate} showDemand={gameState.technologies.marketAI > 0} />
-                </div>
-              )}
-
-              {activeTab === 'trade' && (
-                <div className="flex flex-col gap-6 animate-in fade-in duration-500">
-                  <div className="glass p-6 rounded-3xl border border-cyan-500/20 bg-cyan-500/5">
-                    <h2 className="orbitron text-sm font-black text-cyan-400 mb-6 flex items-center gap-2 uppercase tracking-widest text-left">
-                      <PlusCircle size={16} /> Create Trade Offer
-                    </h2>
-                    <form onSubmit={handlePostTrade} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-                      <div className="flex flex-col gap-2">
-                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest uppercase text-left">Resource</label>
-                        <select value={p2pForm.resource} onChange={e => setP2pForm(p => ({...p, resource: e.target.value as any}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm">
-                          <option value="iron">Iron</option>
-                          <option value="plasma">Plasma</option>
-                          <option value="crystal">Crystal</option>
-                        </select>
-                      </div>
-                      <div className="flex flex-col gap-2">
-                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest uppercase text-left">Amount</label>
-                        <input type="number" placeholder="0" value={p2pForm.amount || ''} onChange={e => setP2pForm(p => ({...p, amount: Number(e.target.value)}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm" />
-                      </div>
-                      <div className="flex flex-col gap-2">
-                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest uppercase text-left">Price (CR)</label>
-                        <input type="number" placeholder="0" value={p2pForm.price || ''} onChange={e => setP2pForm(p => ({...p, price: Number(e.target.value)}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm" />
-                      </div>
-                      <button className="bg-cyan-600 hover:bg-cyan-500 text-white font-black orbitron text-[11px] h-[46px] rounded-xl shadow-lg transition-all active:scale-95 uppercase tracking-widest">List Offer</button>
-                    </form>
-                  </div>
-
-                  <div className="glass p-6 rounded-3xl border border-white/5">
-                    <h2 className="orbitron text-sm font-black text-slate-100 mb-6 flex items-center gap-2 uppercase tracking-widest text-left">
-                      <Globe size={16} className="text-cyan-400" /> Galactic Market Board
-                    </h2>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {marketListings.length === 0 ? (
-                        <div className="col-span-full text-center py-20 text-slate-600 font-mono text-xs uppercase tracking-widest opacity-40 italic">No active listings in sector.</div>
-                      ) : marketListings.map(listing => (
-                        <div key={listing.id} className={`p-5 rounded-2xl border transition-all ${listing.seller_id === currentUser.id ? 'bg-cyan-500/10 border-cyan-500/20' : 'bg-slate-900/50 border-white/5'}`}>
-                          <div className="flex justify-between items-start mb-4">
-                            <div className="flex items-center gap-3">
-                              <div className="p-2 bg-slate-950 rounded-lg text-cyan-400">
-                                {listing.resource_type === 'iron' ? <Database size={16} /> : listing.resource_type === 'plasma' ? <Zap size={16} /> : <Rocket size={16} />}
-                              </div>
-                              <div className="flex flex-col">
-                                <span className="text-[10px] font-black orbitron uppercase">{listing.resource_type}</span>
-                                <span className="text-[8px] font-mono text-slate-500 tracking-tighter">Pilot: {listing.seller_id}</span>
-                              </div>
-                            </div>
-                            <span className="text-[10px] font-mono text-slate-600 tracking-tighter">{new Date(listing.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                          </div>
-                          <div className="flex justify-between items-end">
-                            <div className="text-left">
-                              <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-1">OFFER</span>
-                              <span className="orbitron text-lg font-bold text-white">{listing.amount.toLocaleString()}</span>
-                            </div>
-                            <div className="text-right">
-                              <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-1">PRICE</span>
-                              <span className="orbitron text-lg font-bold text-yellow-500">{listing.price.toLocaleString()} <span className="text-[10px]">CR</span></span>
-                            </div>
-                          </div>
-                          <div className="mt-4 pt-4 border-t border-white/5">
-                            {listing.seller_id === currentUser.id ? (
-                              <button onClick={() => handleCancelListing(listing)} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2 tracking-widest uppercase"><XCircle size={14} /> Cancel Listing</button>
-                            ) : (
-                              <button onClick={() => handleBuyListing(listing)} disabled={gameState.credits < listing.price} className={`w-full py-3 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2 transition-all tracking-widest uppercase ${gameState.credits >= listing.price ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}><ShoppingBag size={14} /> Accept Offer</button>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {activeTab === 'social' && (
-                <div className="glass rounded-3xl p-8 border border-white/5 animate-in fade-in duration-500 text-left">
-                   <div className="flex items-center gap-4 mb-8">
-                     <Trophy size={32} className="text-yellow-400" />
-                     <h2 className="orbitron text-xl font-black italic uppercase tracking-widest">Global Leaderboard</h2>
-                   </div>
-                   <div className="space-y-4">
-                      {leaderboard.length === 0 ? (
-                        <div className="text-center py-10 text-slate-500 font-mono uppercase tracking-widest italic opacity-50">Establishing connection to persistence grid...</div>
-                      ) : leaderboard.map((entry, idx) => (
-                        <div key={entry.id} className={`flex items-center justify-between p-4 rounded-2xl border ${entry.id === currentUser.id ? 'bg-cyan-500/10 border-cyan-500/30 shadow-lg shadow-cyan-500/5' : 'bg-slate-900/50 border-white/5'}`}>
-                           <div className="flex items-center gap-4">
-                             <span className="orbitron text-xs font-black text-slate-500 tracking-tighter w-8">#{idx + 1}</span>
-                             <div className="flex flex-col text-left">
-                               <span className="orbitron text-sm font-bold text-white uppercase tracking-tighter">{entry.id} {entry.id === currentUser.id && <span className="text-[10px] text-cyan-400 tracking-normal ml-2">(YOU)</span>}</span>
-                               <span className="text-[8px] font-mono text-slate-500 uppercase tracking-widest">Sector Elite Pilot</span>
-                             </div>
-                           </div>
-                           <span className="orbitron font-black text-yellow-500">{Math.floor(entry.credits || 0).toLocaleString()} <span className="text-[9px]">CR</span></span>
-                        </div>
-                      ))}
-                   </div>
-                </div>
-              )}
-            </div>
-          </main>
+        {/* Kaynak Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+           <QuickStat icon={<Database />} label="Demir" val={gameState.resources.iron} max={currentMaxStorage} color="text-slate-400" />
+           <QuickStat icon={<Zap />} label="Plazma" val={gameState.resources.plasma} max={currentMaxStorage} color="text-purple-400" />
+           <QuickStat icon={<Gem />} label="Kristal" val={gameState.resources.crystal} max={currentMaxStorage} color="text-emerald-400" />
+           <QuickStat icon={<Rocket />} label="Gemiler" val={(Object.values(gameState.fleet) as number[]).reduce((a, b) => a + b, 0)} color="text-cyan-400" />
+           <QuickStat icon={<Crosshair />} label="Sektörler" val={gameState.sectors.filter(s => s.controlled).length} color="text-green-400" />
         </div>
 
-        <footer className="text-center py-12 border-t border-slate-900/50">
-           <p className="orbitron text-[9px] font-black text-slate-700 uppercase tracking-[0.5em] mb-2">Nebula Galactic Protocol | v2.9.1 Schema Fix</p>
-           <p className="text-[8px] font-mono text-slate-800 uppercase tracking-widest">Node ID: {SUPABASE_URL.replace('https://', '').split('.')[0]}</p>
+        {/* Navigasyon */}
+        <nav className="flex bg-slate-900/50 p-1 rounded-2xl self-start border border-white/5 overflow-x-auto no-scrollbar shadow-xl">
+           <NavBtn active={activeTab === 'command'} onClick={() => setActiveTab('command')} icon={<Activity />} label="Karargah" />
+           <NavBtn active={activeTab === 'shipyard'} onClick={() => setActiveTab('shipyard')} icon={<Cpu />} label="Tersane" />
+           <NavBtn active={activeTab === 'starmap'} onClick={() => setActiveTab('starmap')} icon={<MapIcon />} label="Harita" />
+           <NavBtn active={activeTab === 'market'} onClick={() => setActiveTab('market')} icon={<BarChart3 />} label="Ticaret" />
+           <NavBtn active={activeTab === 'diplomacy'} onClick={() => setActiveTab('diplomacy')} icon={<Handshake />} label="Diplomasi" />
+           <NavBtn active={activeTab === 'ai'} onClick={() => setActiveTab('ai')} icon={<Bot />} label="Amiral AI" />
+        </nav>
+
+        {/* İçerik */}
+        <main className="min-h-[500px]">
+           {activeTab === 'command' && (
+             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in duration-500">
+                <div className="lg:col-span-2 flex flex-col gap-6">
+                    <div className="glass rounded-[2.5rem] p-10 flex flex-col items-center justify-center border border-cyan-500/10 min-h-[400px] relative overflow-hidden">
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(6,182,212,0.1),transparent)] pointer-events-none" />
+                    <div className="relative w-80 h-80">
+                        <div className="absolute inset-0 border-[3px] border-dashed border-cyan-500/10 rounded-full animate-spin-slow" />
+                        <div className="absolute inset-12 border-[1px] border-cyan-500/30 rounded-full animate-pulse" />
+                        <button 
+                            onClick={() => {
+                                const maxCap = getMaxStorage(gameState.upgrades.storageLevel);
+                                setGameState(prev => ({ 
+                                    ...prev, 
+                                    credits: prev.credits + 50,
+                                    resources: { ...prev.resources, iron: Math.min(maxCap, prev.resources.iron + 10) }
+                                }));
+                                addXP(25);
+                            }}
+                            className="absolute inset-20 glass border-2 border-cyan-500/40 rounded-full flex flex-col items-center justify-center gap-4 hover:scale-105 active:scale-95 transition-all shadow-[0_0_80px_rgba(6,182,212,0.3)] group"
+                        >
+                            <Target size={56} className="text-cyan-400 group-hover:scale-110 transition-transform" />
+                            <div className="text-center">
+                                <span className="orbitron text-[10px] font-black text-white tracking-widest uppercase block mb-1">Komut Ver</span>
+                                <span className="text-[8px] font-mono text-cyan-500 uppercase">+25 XP / +50 CR / +10 Demir</span>
+                            </div>
+                        </button>
+                    </div>
+                    </div>
+
+                    {/* Yükseltme Merkezi */}
+                    <div className="glass rounded-[2.5rem] p-8 border border-white/5 bg-slate-900/20">
+                        <h3 className="orbitron text-xs font-black text-slate-500 uppercase tracking-[0.3em] mb-6 flex items-center gap-2">
+                           <Zap size={14} className="text-yellow-500" /> Teknolojik Otomasyon Merkezi
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <UpgradeCard 
+                                icon={<HardDrive />} 
+                                title="Depo Kapasitesi" 
+                                level={gameState.upgrades.storageLevel} 
+                                val={`${currentMaxStorage.toLocaleString()} Birim`}
+                                cost={getStorageUpgradeCost(gameState.upgrades.storageLevel)} 
+                                canAfford={gameState.credits >= getStorageUpgradeCost(gameState.upgrades.storageLevel)}
+                                onUpgrade={() => handleUpgrade('storage')}
+                                color="cyan"
+                            />
+                            <UpgradeCard 
+                                icon={<Pickaxe />} 
+                                title="Otomatik Madenci" 
+                                level={gameState.upgrades.autoMiners} 
+                                val={`+${(gameState.upgrades.autoMiners * 0.5).toFixed(1)} Demir/sn`}
+                                cost={getAutoMinerCost(gameState.upgrades.autoMiners)} 
+                                canAfford={gameState.credits >= getAutoMinerCost(gameState.upgrades.autoMiners)}
+                                onUpgrade={() => handleUpgrade('autoMiner')}
+                                color="slate"
+                            />
+                            <UpgradeCard 
+                                icon={<Zap />} 
+                                title="Plazma Çıkarıcı" 
+                                level={gameState.upgrades.plasmaExtractors} 
+                                val={`+${(gameState.upgrades.plasmaExtractors * 0.1).toFixed(1)} Plazma/sn`}
+                                cost={getPlasmaExtractorCost(gameState.upgrades.plasmaExtractors)} 
+                                canAfford={gameState.credits >= getPlasmaExtractorCost(gameState.upgrades.plasmaExtractors)}
+                                onUpgrade={() => handleUpgrade('plasma')}
+                                color="purple"
+                            />
+                            <UpgradeCard 
+                                icon={<Gem />} 
+                                title="Kristal Rafinerisi" 
+                                level={gameState.upgrades.crystalRefineries} 
+                                val={`+${(gameState.upgrades.crystalRefineries * 0.02).toFixed(2)} Kristal/sn`}
+                                cost={getCrystalRefineryCost(gameState.upgrades.crystalRefineries)} 
+                                canAfford={gameState.credits >= getCrystalRefineryCost(gameState.upgrades.crystalRefineries)}
+                                onUpgrade={() => handleUpgrade('crystal')}
+                                color="emerald"
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="space-y-4">
+                   <h3 className="orbitron text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] text-left">Filo Yapısı</h3>
+                   {SHIP_TYPES.map(s => (
+                     <div key={s.id} className="glass p-6 rounded-2xl border border-white/5 flex items-center justify-between group hover:border-cyan-500/20 transition-all">
+                        <div className="flex items-center gap-5">
+                           <div className="p-4 bg-slate-950 rounded-xl group-hover:scale-110 transition-transform border border-white/5">
+                              {s.type === 'miner' ? <Pickaxe className="text-slate-400" size={20} /> : s.type === 'defender' ? <Shield className="text-blue-400" size={20} /> : <Box className="text-yellow-400" size={20} />}
+                           </div>
+                           <div className="text-left">
+                              <p className="orbitron text-[11px] font-black text-white uppercase">{s.name}</p>
+                              <p className="text-[9px] font-mono text-slate-500 uppercase">Aktif Rezerv</p>
+                           </div>
+                        </div>
+                        <span className="orbitron text-xl font-black text-cyan-400">{gameState.fleet[s.id] || 0}</span>
+                     </div>
+                   ))}
+                </div>
+             </div>
+           )}
+
+           {/* Diğer sekmeler (diplomasi, market, ai, vb.) mevcut kod tabanındaki gibi kalacak */}
+           {activeTab === 'diplomacy' && (
+             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in slide-in-from-right-8 duration-500">
+                <div className="glass p-10 rounded-[2.5rem] border border-cyan-500/20 bg-slate-900/10 shadow-2xl">
+                    <div className="flex items-center gap-4 mb-8">
+                        <Handshake className="text-cyan-400" size={32} />
+                        <h3 className="orbitron text-xl font-black text-white uppercase tracking-tighter italic">Yeni Takas <span className="text-cyan-400">Protokolü</span></h3>
+                    </div>
+                    <div className="space-y-6">
+                        <div className="flex flex-col gap-2 text-left">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Alıcı Pilot Kimliği</label>
+                            <div className="relative">
+                                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-600" size={16} />
+                                <input type="text" value={targetPilotId} onChange={(e) => setTargetPilotId(e.target.value)} placeholder="Pilot ID girin..." className="w-full bg-slate-950 border border-white/5 rounded-2xl py-4 pl-12 pr-4 text-sm font-mono focus:border-cyan-500 outline-none transition-all"/>
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-6">
+                            <div className="space-y-4">
+                                <p className="text-[10px] font-black text-green-500 uppercase tracking-widest text-left">Teklifiniz</p>
+                                <TradeInput icon={<Database size={14}/>} label="Demir" val={tradeOffer.iron} onChange={(v) => setTradeOffer({...tradeOffer, iron: v})} />
+                                <TradeInput icon={<Zap size={14}/>} label="Plazma" val={tradeOffer.plasma} onChange={(v) => setTradeOffer({...tradeOffer, plasma: v})} />
+                                <TradeInput icon={<Trophy size={14}/>} label="Kredi" val={tradeOffer.credits} onChange={(v) => setTradeOffer({...tradeOffer, credits: v})} />
+                            </div>
+                            <div className="space-y-4 text-left">
+                                <p className="text-[10px] font-black text-red-500 uppercase tracking-widest">İstediğiniz</p>
+                                <TradeInput icon={<Database size={14}/>} label="Demir" val={tradeRequest.iron} onChange={(v) => setTradeRequest({...tradeRequest, iron: v})} />
+                                <TradeInput icon={<Zap size={14}/>} label="Plazma" val={tradeRequest.plasma} onChange={(v) => setTradeRequest({...tradeRequest, plasma: v})} />
+                                <TradeInput icon={<Trophy size={14}/>} label="Kredi" val={tradeRequest.credits} onChange={(v) => setTradeRequest({...tradeRequest, credits: v})} />
+                            </div>
+                        </div>
+                        <button onClick={handleSendTrade} disabled={isTrading || !targetPilotId} className="w-full py-5 bg-cyan-600 hover:bg-cyan-500 text-white orbitron font-black text-xs rounded-2xl shadow-xl transition-all uppercase tracking-[0.2em] flex items-center justify-center gap-3">
+                            {isTrading ? <Loader2 className="animate-spin" size={16} /> : <><Handshake size={18} /> Teklifi Gönder</>}
+                        </button>
+                    </div>
+                </div>
+                {/* Talepler Listesi (Simüle) */}
+                <div className="space-y-6">
+                    <h3 className="orbitron text-xs font-black text-slate-500 uppercase tracking-[0.3em] text-left">Aktif Talepler</h3>
+                    <div className="flex flex-col gap-4 max-h-[600px] overflow-y-auto pr-2 text-left">
+                        {trades.length === 0 && <p className="text-center py-20 text-slate-600 text-xs font-mono italic">Bekleyen takas kaydı bulunamadı.</p>}
+                        {trades.map(trade => (
+                            <div key={trade.id} className="glass p-6 rounded-3xl border border-white/5 flex flex-col gap-4">
+                                <p className="orbitron text-[10px] font-black text-white uppercase italic">{trade.sender_id === currentUser.id ? `Hedef: ${trade.receiver_id}` : `Gönderen: ${trade.sender_id}`}</p>
+                                <div className="flex gap-4 text-[10px] font-mono">
+                                    <span className="text-green-400">Teklif: {trade.offer.credits} CR</span>
+                                    <span className="text-red-400">İstek: {trade.request.credits} CR</span>
+                                </div>
+                                {trade.status === 'pending' && trade.receiver_id === currentUser.id && (
+                                    <button onClick={() => handleAcceptTrade(trade)} className="py-2 bg-green-600 rounded-lg text-[9px] font-black uppercase">Kabul Et</button>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+             </div>
+           )}
+
+           {activeTab === 'shipyard' && (
+             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-in slide-in-from-bottom-8 duration-500">
+                {SHIP_TYPES.map(ship => (
+                  <div key={ship.id} className="glass p-8 rounded-[2.5rem] border border-white/5 flex flex-col gap-6 text-left group">
+                     <div className="w-16 h-16 bg-slate-950 rounded-2xl flex items-center justify-center border border-white/10 group-hover:border-cyan-500/50 transition-colors shadow-inner">
+                        <Rocket size={32} className="text-cyan-500" />
+                     </div>
+                     <h4 className="orbitron text-xl font-black text-white mb-2 uppercase">{ship.name}</h4>
+                     <p className="text-[11px] text-slate-400 font-mono leading-relaxed italic">Gemi sınıfı: {ship.type.toUpperCase()}</p>
+                     <div className="space-y-3 py-6 border-y border-white/5">
+                        <ShipCost label="Kredi" val={ship.cost.credits} has={gameState.credits >= ship.cost.credits} />
+                        <ShipCost label="Demir" val={ship.cost.iron} has={gameState.resources.iron >= ship.cost.iron} />
+                        <ShipCost label="Plazma" val={ship.cost.plasma} has={gameState.resources.plasma >= ship.cost.plasma} />
+                     </div>
+                     <button onClick={() => buildShip(ship.id)} className="w-full py-5 rounded-2xl orbitron text-[11px] font-black uppercase tracking-widest bg-cyan-600 hover:bg-cyan-500">Üretime Başla</button>
+                  </div>
+                ))}
+             </div>
+           )}
+
+           {activeTab === 'market' && (
+             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                {/* Fix for Property 'price' does not exist on type 'unknown': explicitly typing data from Object.entries */}
+                {Object.entries(gameState.market).map(([key, data]: [string, any]) => (
+                   <div key={key} className="glass p-8 rounded-[2.5rem] border border-white/5 text-left">
+                      <p className="orbitron text-sm font-black text-white uppercase mb-4 italic">{key.toUpperCase()}</p>
+                      <p className="orbitron text-3xl font-black text-yellow-500 mb-6">{data.price} <span className="text-sm">CR</span></p>
+                      <button onClick={() => sellResources(key, data)} className="w-full py-3 bg-green-600 rounded-xl text-[10px] font-black uppercase">Hepsini Sat</button>
+                   </div>
+                ))}
+             </div>
+           )}
+
+           {activeTab === 'ai' && (
+             <div className="max-w-2xl mx-auto glass p-12 rounded-[3.5rem] border border-cyan-500/20 text-left">
+                <div className="flex items-center gap-8 mb-12">
+                   <div className="w-24 h-24 bg-cyan-950 rounded-[2rem] flex items-center justify-center border border-cyan-500/30">
+                      <BrainCircuit className="text-cyan-400 w-12 h-12" />
+                   </div>
+                   <h2 className="orbitron text-2xl font-black text-white uppercase italic tracking-tighter">Stratejik İstihbarat <span className="text-cyan-400">Merkezi</span></h2>
+                </div>
+                <div className="p-10 rounded-[2.5rem] bg-slate-950/90 border border-white/5 min-h-[180px] mb-10 font-mono text-cyan-50 leading-relaxed text-sm italic shadow-inner">
+                   {aiLoading ? <Loader2 className="animate-spin text-cyan-400 mx-auto" size={40} /> : aiAdvice || "Amiral AI talimat bekliyor."}
+                </div>
+                <button onClick={getStrategicAdvice} className="w-full py-6 bg-gradient-to-r from-cyan-600 to-blue-700 text-white orbitron font-black text-xs rounded-2xl">BRİFİNG İSTE</button>
+             </div>
+           )}
+
+           {activeTab === 'starmap' && (
+             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {gameState.sectors.map(sector => (
+                   <div key={sector.id} className="glass p-8 rounded-[2.5rem] border border-white/5 text-left">
+                      <h4 className="orbitron text-2xl font-black text-white mb-2">{sector.name}</h4>
+                      <div className="space-y-4 mb-10 text-[11px] font-mono">
+                         <div className="flex justify-between uppercase"><span>Getiri</span><span>x{sector.resourceMultiplier}</span></div>
+                         <div className="flex justify-between uppercase"><span>Risk</span><span className="text-red-500">%{sector.risk}</span></div>
+                      </div>
+                      <button onClick={() => deployToSector(sector.id)} className={`w-full py-5 rounded-2xl orbitron text-[11px] font-black uppercase ${sector.controlled ? 'bg-slate-800' : 'bg-red-600'}`}>
+                         {sector.controlled ? 'GÜVENLİ' : 'OPERASYON BAŞLAT'}
+                      </button>
+                   </div>
+                ))}
+             </div>
+           )}
+        </main>
+
+        <footer className="py-20 text-center border-t border-slate-900/50">
+           <p className="orbitron text-[10px] font-black text-slate-700 uppercase tracking-[0.6em] mb-3">Nebula Galaktik Protokolü | v4.6 Otomasyon Devrimi</p>
+           <p className="text-[9px] font-mono text-slate-800 uppercase tracking-widest">Amiral Seviyesi Senkronize Edildi</p>
         </footer>
       </div>
     </div>
   );
 };
 
-// --- Subcomponents ---
-const ResourceCard = ({ icon, label, val, color, limit }: any) => (
-  <div className="glass p-4 rounded-2xl border border-white/5 flex items-center gap-4 bg-slate-900/20 text-left">
-    <div className={`p-3 bg-slate-950 rounded-xl shadow-inner ${color}`}>{React.cloneElement(icon, { size: 18 })}</div>
-    <div className="flex flex-col">
-      <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">{label}</span>
-      <span className={`orbitron text-xs font-bold ${color}`}>
-        {Math.floor(val || 0).toLocaleString()}
-        {limit && <span className="text-[9px] text-slate-700 font-normal italic"> / {limit.toLocaleString()}</span>}
-      </span>
+// --- Yardımcı Bileşenler ---
+const QuickStat = ({ icon, label, val, max, color }: any) => (
+  <div className="glass p-6 rounded-3xl border border-white/5 flex items-center gap-5 bg-slate-900/20 text-left group hover:border-white/10 transition-all shadow-lg overflow-hidden">
+    <div className={`p-4 bg-slate-950 rounded-2xl ${color} shadow-inner border border-white/5 group-hover:scale-110 transition-transform`}>{React.cloneElement(icon, { size: 20 })}</div>
+    <div className="flex flex-col flex-1 overflow-hidden">
+       <div className="flex justify-between items-center mb-1">
+            <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">{label}</span>
+            {max && <span className={`text-[8px] font-mono ${val >= max ? 'text-red-500' : 'text-slate-600'}`}>{val >= max ? 'DOLU' : `%${Math.floor((val / max) * 100)}`}</span>}
+       </div>
+       <div className="flex items-baseline gap-1">
+            <span className={`orbitron text-base font-black truncate ${color}`}>{Math.floor(val).toLocaleString()}</span>
+            {max && <span className="text-[9px] font-mono text-slate-600 uppercase">/ {max.toLocaleString()}</span>}
+       </div>
     </div>
   </div>
 );
 
-const ProductionStat = ({ label, val }: any) => (
-  <div className="flex flex-col">
-    <span className="text-[9px] text-slate-600 uppercase font-bold mb-1 tracking-tighter">{label} / SEC</span>
-    <span className="orbitron text-lg font-black text-white">+{(val || 0).toFixed(1)}</span>
-  </div>
-);
+const UpgradeCard = ({ icon, title, level, val, cost, canAfford, onUpgrade, color }: any) => {
+    const colorMap: {[key: string]: string} = {
+        cyan: 'text-cyan-400 border-cyan-500/30 bg-cyan-500/10',
+        slate: 'text-slate-400 border-slate-500/30 bg-slate-500/10',
+        purple: 'text-purple-400 border-purple-500/30 bg-purple-500/10',
+        emerald: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'
+    };
+    return (
+        <div className="p-6 bg-slate-900/50 rounded-3xl border border-white/5 flex flex-col gap-4 group hover:border-white/20 transition-all text-left">
+            <div className="flex justify-between items-start">
+                <div className={`p-3 rounded-xl ${colorMap[color]}`}>{React.cloneElement(icon, { size: 24 })}</div>
+                <div className="text-right">
+                    <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Teknoloji Seviyesi</p>
+                    <p className="orbitron text-sm font-black text-white">{level}</p>
+                </div>
+            </div>
+            <div>
+                <p className="orbitron text-[11px] font-black text-white uppercase mb-1">{title}</p>
+                <p className="text-[9px] font-mono text-slate-500 uppercase">Verimlilik: {val}</p>
+            </div>
+            <button 
+                onClick={onUpgrade}
+                disabled={!canAfford}
+                className={`w-full py-4 rounded-xl orbitron text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${
+                    canAfford ? 'bg-slate-800 hover:bg-white/10 text-white border border-white/10' : 'bg-slate-950 text-slate-700 cursor-not-allowed border border-white/5'
+                }`}
+            >
+                <ChevronUp size={14} /> Geliştir ({cost.toLocaleString()} CR)
+            </button>
+        </div>
+    );
+};
 
 const NavBtn = ({ active, onClick, icon, label }: any) => (
-  <button onClick={onClick} className={`flex items-center gap-2 px-6 py-3 rounded-xl transition-all orbitron text-[10px] font-black shrink-0 tracking-widest ${active ? 'bg-cyan-600 text-white shadow-xl shadow-cyan-900/20' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'}`}>
-    {React.cloneElement(icon, { size: 14 })}
+  <button onClick={onClick} className={`flex items-center gap-4 px-8 py-6 rounded-2xl transition-all orbitron text-[11px] font-black shrink-0 tracking-[0.3em] ${active ? 'bg-cyan-600 text-white shadow-2xl scale-105 z-10 border border-white/10' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/40'}`}>
+    {React.cloneElement(icon, { size: 18 })}
     {label.toUpperCase()}
   </button>
 );
 
-const ShopItem = ({ title, lvl, cost, canBuy, onBuy, icon }: any) => (
-  <div className="glass p-5 rounded-2xl border border-white/5 flex flex-col gap-4 group hover:border-cyan-500/20 transition-all bg-slate-900/20 text-left">
-    <div className="flex justify-between items-center">
-      <div className="p-3 bg-slate-950 rounded-xl group-hover:scale-110 transition-transform">{icon}</div>
-      <span className="orbitron text-[10px] font-black text-cyan-400 bg-cyan-400/10 px-3 py-1 rounded-full uppercase tracking-tighter">LVL {lvl}</span>
-    </div>
-    <h4 className="font-bold text-slate-200 text-sm uppercase tracking-tight">{title}</h4>
-    <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl font-black orbitron text-[10px] transition-all tracking-widest ${canBuy ? 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg shadow-cyan-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
-      UPGRADE: {(cost || 0).toLocaleString()} CR
-    </button>
+const ShipCost = ({ label, val, has }: { label: string, val: number, has: boolean }) => (
+  <div className="flex justify-between text-[11px] font-mono uppercase">
+     <span className="text-slate-500">{label}</span>
+     <span className={has ? 'text-green-400 font-bold' : 'text-red-500'}>{val.toLocaleString()}</span>
   </div>
 );
 
-const TechItem = ({ title, desc, lvl, cost, canBuy, onBuy, icon }: any) => (
-  <div className="glass p-5 rounded-2xl border border-blue-500/10 flex flex-col gap-4 group hover:border-blue-500/30 transition-all bg-blue-500/5 text-left">
-    <div className="flex justify-between items-center">
-      <div className="p-3 bg-slate-950 rounded-xl group-hover:rotate-12 transition-transform text-blue-400">{React.cloneElement(icon, { size: 20 })}</div>
-      <span className="orbitron text-[10px] font-black text-blue-400 bg-blue-400/10 px-3 py-1 rounded-full uppercase tracking-tighter">TIER {lvl}</span>
+const TradeInput = ({ icon, label, val, onChange }: any) => (
+    <div className="flex flex-col gap-1 text-left">
+        <label className="text-[8px] font-mono text-slate-600 uppercase tracking-tighter flex items-center gap-1">{icon} {label}</label>
+        <input type="number" min="0" value={val} onChange={(e) => onChange(parseInt(e.target.value) || 0)} className="w-full bg-slate-950 border border-white/5 rounded-xl py-2 px-3 text-[10px] font-mono focus:border-cyan-500 outline-none"/>
     </div>
-    <div>
-      <h4 className="font-bold text-slate-100 text-sm mb-1 uppercase tracking-tight">{title}</h4>
-      <p className="text-[10px] text-slate-500 leading-relaxed font-mono italic">{desc}</p>
-    </div>
-    <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl font-black orbitron text-[10px] transition-all tracking-widest ${canBuy ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
-      RESEARCH: {(cost || 0).toLocaleString()} BITS
-    </button>
-  </div>
-);
-
-const MarketCard = ({ resource, data, amount, onSell, icon, tax, showDemand }: any) => (
-  <div className="glass p-6 rounded-3xl border border-white/5 flex flex-col gap-6 bg-slate-900/20 text-left">
-    <div className="flex items-center gap-3">
-      <div className="p-3 bg-slate-950 rounded-2xl text-slate-400">{icon}</div>
-      <span className="orbitron font-black text-slate-100 uppercase tracking-tighter">{resource}</span>
-    </div>
-    <div className="space-y-4">
-      <div className="flex justify-between items-end">
-        <div className="flex flex-col text-left">
-          <span className="text-[9px] text-slate-500 uppercase font-black tracking-widest">Price / Unit</span>
-          <div className="flex items-center gap-2">
-            <span className={`orbitron text-xl font-black ${data?.trend === 'up' ? 'text-green-400' : data?.trend === 'down' ? 'text-red-400' : 'text-yellow-500'}`}>
-              {data?.price || 0} <span className="text-[10px]">CR</span>
-            </span>
-            {data?.trend === 'up' ? <TrendingUp size={16} className="text-green-400" /> : <TrendingDown size={16} className="text-red-400" />}
-          </div>
-        </div>
-        <div className="text-right">
-          <span className="text-[9px] text-slate-500 uppercase font-black tracking-widest">Holdings</span>
-          <p className="orbitron font-bold text-white text-sm">{Math.floor(amount || 0).toLocaleString()}</p>
-        </div>
-      </div>
-    </div>
-    <div className="pt-4 border-t border-white/5">
-      <div className="flex justify-between text-[10px] font-mono mb-4 text-slate-500 uppercase tracking-widest italic opacity-60">
-        <span>Est. Net Revenue:</span>
-        <span className="text-green-400 font-black">+{((amount || 0) * (data?.price || 0) * (1-tax)).toFixed(0)} CR</span>
-      </div>
-      <button onClick={onSell} disabled={!amount || amount <= 0} className={`w-full py-4 rounded-2xl font-black orbitron text-[11px] transition-all tracking-widest uppercase ${amount > 0 ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
-        Sell All Cargo
-      </button>
-      <p className="text-[8px] text-center mt-2 text-slate-600 font-mono uppercase tracking-widest italic opacity-40">Tax: {(tax*100).toFixed(0)}%</p>
-    </div>
-  </div>
 );
 
 const root = createRoot(document.getElementById('root')!);
