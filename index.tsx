@@ -58,7 +58,8 @@ import {
   History,
   UserPlus,
   LogIn,
-  Gem
+  Gem,
+  LockKeyhole
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenAI } from "@google/genai";
@@ -81,10 +82,11 @@ interface Ship {
 interface Sector {
   id: string;
   name: string;
-  type: 'core' | 'frontier' | 'void';
+  type: 'core' | 'frontier' | 'void' | 'nebula' | 'anomaly';
   resourceMultiplier: number;
   risk: number;
   controlled: boolean;
+  minLevel: number;
   deployedShips: { [key: string]: number };
 }
 
@@ -132,9 +134,12 @@ const SHIP_TYPES: Ship[] = [
 ];
 
 const SECTORS: Sector[] = [
-  { id: 's1', name: 'Alfa Merkezi', type: 'core', resourceMultiplier: 1.0, risk: 5, controlled: true, deployedShips: {} },
-  { id: 's2', name: 'Delta Sınırı', type: 'frontier', resourceMultiplier: 2.5, risk: 25, controlled: false, deployedShips: {} },
-  { id: 's3', name: 'Omega Boşluğu', type: 'void', resourceMultiplier: 6.0, risk: 65, controlled: false, deployedShips: {} },
+  { id: 's1', name: 'Alfa Merkezi', type: 'core', resourceMultiplier: 1.0, risk: 5, controlled: true, minLevel: 1, deployedShips: {} },
+  { id: 's2', name: 'Asteroid Kuşağı', type: 'nebula', resourceMultiplier: 1.5, risk: 15, controlled: false, minLevel: 3, deployedShips: {} },
+  { id: 's3', name: 'Delta Sınırı', type: 'frontier', resourceMultiplier: 2.5, risk: 25, controlled: false, minLevel: 7, deployedShips: {} },
+  { id: 's4', name: 'Pulsar Bölgesi', type: 'nebula', resourceMultiplier: 4.0, risk: 40, controlled: false, minLevel: 12, deployedShips: {} },
+  { id: 's5', name: 'Omega Boşluğu', type: 'void', resourceMultiplier: 6.0, risk: 65, controlled: false, minLevel: 20, deployedShips: {} },
+  { id: 's6', name: 'Olay Ufku', type: 'anomaly', resourceMultiplier: 12.0, risk: 85, controlled: false, minLevel: 35, deployedShips: {} },
 ];
 
 const INITIAL_GAME_STATE: GameState = {
@@ -220,7 +225,12 @@ const App = () => {
   const handleLogin = (user: UserData) => {
     localStorage.setItem('nebula_pilot_id', user.id);
     setCurrentUser(user);
-    setGameState({ ...INITIAL_GAME_STATE, ...user.gameState });
+    // Mevcut state'i sektörleri INITIAL_GAME_STATE ile senkronize ederek güncelle (yeni sektörler için)
+    const mergedSectors = SECTORS.map(s => {
+        const existing = user.gameState.sectors?.find(es => es.id === s.id);
+        return existing ? { ...s, controlled: existing.controlled } : s;
+    });
+    setGameState({ ...INITIAL_GAME_STATE, ...user.gameState, sectors: mergedSectors });
   };
 
   const handleAuth = async () => {
@@ -461,13 +471,19 @@ const App = () => {
 
   const deployToSector = (sectorId: string) => {
     const sector = gameState.sectors.find(s => s.id === sectorId)!;
+    
+    if (gameState.level < sector.minLevel) {
+        alert(`Bu sektöre erişmek için en az Seviye ${sector.minLevel} olmalısınız.`);
+        return;
+    }
+
     if (gameState.fleet.defender >= 5 && !sector.controlled) {
       setGameState(prev => ({
         ...prev,
         sectors: prev.sectors.map(s => s.id === sectorId ? { ...s, controlled: true } : s),
         fleet: { ...prev.fleet, defender: prev.fleet.defender - 5 } 
       }));
-      addXP(2500);
+      addXP(2500 * (sector.minLevel || 1));
       alert(`Sektör ${sector.name} temizlendi ve ele geçirildi! Komuta Rütbesi arttı.`);
     } else if (sector.controlled) {
       alert("Sektör zaten kontrol altında.");
@@ -626,7 +642,7 @@ const App = () => {
            {activeTab === 'command' && (
              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in duration-500">
                 <div className="lg:col-span-2 flex flex-col gap-6">
-                    <div className="glass rounded-[2.5rem] p-10 flex flex-col items-center justify-center border border-cyan-500/10 min-h-[400px] relative overflow-hidden">
+                    <div className="glass rounded-[2.5rem] p-10 flex flex-col items-center justify-center border border-cyan-500/10 min-h-[400px] relative overflow-hidden text-center">
                     <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(6,182,212,0.1),transparent)] pointer-events-none" />
                     <div className="relative w-80 h-80">
                         <div className="absolute inset-0 border-[3px] border-dashed border-cyan-500/10 rounded-full animate-spin-slow" />
@@ -722,7 +738,6 @@ const App = () => {
              </div>
            )}
 
-           {/* Diğer sekmeler (diplomasi, market, ai, vb.) mevcut kod tabanındaki gibi kalacak */}
            {activeTab === 'diplomacy' && (
              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in slide-in-from-right-8 duration-500">
                 <div className="glass p-10 rounded-[2.5rem] border border-cyan-500/20 bg-slate-900/10 shadow-2xl">
@@ -757,7 +772,6 @@ const App = () => {
                         </button>
                     </div>
                 </div>
-                {/* Talepler Listesi (Simüle) */}
                 <div className="space-y-6">
                     <h3 className="orbitron text-xs font-black text-slate-500 uppercase tracking-[0.3em] text-left">Aktif Talepler</h3>
                     <div className="flex flex-col gap-4 max-h-[600px] overflow-y-auto pr-2 text-left">
@@ -801,7 +815,6 @@ const App = () => {
 
            {activeTab === 'market' && (
              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                {/* Fix for Property 'price' does not exist on type 'unknown': explicitly typing data from Object.entries */}
                 {Object.entries(gameState.market).map(([key, data]: [string, any]) => (
                    <div key={key} className="glass p-8 rounded-[2.5rem] border border-white/5 text-left">
                       <p className="orbitron text-sm font-black text-white uppercase mb-4 italic">{key.toUpperCase()}</p>
@@ -828,25 +841,64 @@ const App = () => {
            )}
 
            {activeTab === 'starmap' && (
-             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {gameState.sectors.map(sector => (
-                   <div key={sector.id} className="glass p-8 rounded-[2.5rem] border border-white/5 text-left">
-                      <h4 className="orbitron text-2xl font-black text-white mb-2">{sector.name}</h4>
-                      <div className="space-y-4 mb-10 text-[11px] font-mono">
-                         <div className="flex justify-between uppercase"><span>Getiri</span><span>x{sector.resourceMultiplier}</span></div>
-                         <div className="flex justify-between uppercase"><span>Risk</span><span className="text-red-500">%{sector.risk}</span></div>
+             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-in zoom-in duration-500">
+                {gameState.sectors.map(sector => {
+                    const isLocked = gameState.level < sector.minLevel;
+                    return (
+                   <div key={sector.id} className={`glass p-8 rounded-[2.5rem] border relative overflow-hidden group text-left transition-all duration-500 ${isLocked ? 'grayscale border-slate-700 opacity-60' : sector.controlled ? 'border-green-500/30 shadow-[0_0_40px_rgba(34,197,94,0.05)]' : 'border-red-500/20 shadow-[0_0_40px_rgba(239,68,68,0.05)]'}`}>
+                      {isLocked && (
+                          <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-[2px] z-20 flex flex-col items-center justify-center gap-4">
+                              <div className="w-16 h-16 bg-slate-900 rounded-full flex items-center justify-center border border-white/10 shadow-xl">
+                                  <LockKeyhole className="text-slate-500" size={32} />
+                              </div>
+                              <p className="orbitron text-xs font-black text-slate-400 uppercase tracking-widest">KİLİTLİ: SEVİYE {sector.minLevel}</p>
+                          </div>
+                      )}
+                      
+                      {sector.controlled && <div className="absolute -top-12 -right-12 w-32 h-32 bg-green-500/10 rounded-full blur-3xl animate-pulse" />}
+                      
+                      <div className="flex justify-between items-center mb-8 relative z-10">
+                         <div className={`p-4 rounded-2xl ${isLocked ? 'bg-slate-800 text-slate-500' : sector.controlled ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'} border border-current opacity-50 group-hover:opacity-100 transition-opacity`}>
+                            <MapIcon size={32} />
+                         </div>
+                         <span className={`orbitron text-[10px] font-black px-4 py-1.5 rounded-full uppercase tracking-widest ${isLocked ? 'bg-slate-800 text-slate-500' : sector.controlled ? 'bg-green-500/20 text-green-400 border border-green-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}`}>
+                            {isLocked ? 'ERİŞİM YOK' : sector.controlled ? 'HUZURLU' : 'DÜŞMAN BÖLGESİ'}
+                         </span>
                       </div>
-                      <button onClick={() => deployToSector(sector.id)} className={`w-full py-5 rounded-2xl orbitron text-[11px] font-black uppercase ${sector.controlled ? 'bg-slate-800' : 'bg-red-600'}`}>
-                         {sector.controlled ? 'GÜVENLİ' : 'OPERASYON BAŞLAT'}
+
+                      <h4 className="orbitron text-2xl font-black text-white mb-2 relative z-10">{sector.name}</h4>
+                      <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mb-6 relative z-10">Bölge Ödülü: <span className="text-cyan-400">+{2500 * sector.minLevel} XP</span></p>
+                      
+                      <div className="space-y-4 mb-10 relative z-10">
+                         <div className="flex justify-between text-[11px] font-mono uppercase">
+                            <span className="text-slate-500">Getiri Çarpanı</span>
+                            <span className="text-cyan-400 font-bold">x{sector.resourceMultiplier.toFixed(1)}</span>
+                         </div>
+                         <div className="flex justify-between text-[11px] font-mono uppercase">
+                            <span className="text-slate-500">Yerel Tehdit</span>
+                            <span className="text-red-500 font-bold">%{sector.risk}</span>
+                         </div>
+                      </div>
+
+                      <button 
+                        onClick={() => deployToSector(sector.id)}
+                        disabled={isLocked || sector.controlled}
+                        className={`w-full py-5 rounded-2xl orbitron text-[11px] font-black uppercase tracking-widest transition-all relative z-10 ${
+                          isLocked ? 'bg-slate-900 text-slate-700 cursor-not-allowed' :
+                          sector.controlled ? 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-50' : 
+                          'bg-red-600 hover:bg-red-500 text-white shadow-2xl shadow-red-900/40 hover:scale-[1.02]'
+                        }`}
+                      >
+                         {isLocked ? `SEVİYE ${sector.minLevel} GEREKLİ` : sector.controlled ? 'SEKTÖR GÜVENDE' : 'OPERASYON BAŞLAT'}
                       </button>
                    </div>
-                ))}
+                )})}
              </div>
            )}
         </main>
 
         <footer className="py-20 text-center border-t border-slate-900/50">
-           <p className="orbitron text-[10px] font-black text-slate-700 uppercase tracking-[0.6em] mb-3">Nebula Galaktik Protokolü | v4.6 Otomasyon Devrimi</p>
+           <p className="orbitron text-[10px] font-black text-slate-700 uppercase tracking-[0.6em] mb-3">Nebula Galaktik Protokolü | v4.7 Galaktik Harita Genişletme</p>
            <p className="text-[9px] font-mono text-slate-800 uppercase tracking-widest">Amiral Seviyesi Senkronize Edildi</p>
         </footer>
       </div>
@@ -912,7 +964,7 @@ const NavBtn = ({ active, onClick, icon, label }: any) => (
 );
 
 const ShipCost = ({ label, val, has }: { label: string, val: number, has: boolean }) => (
-  <div className="flex justify-between text-[11px] font-mono uppercase">
+  <div className="flex justify-between text-[11px] font-mono uppercase text-left">
      <span className="text-slate-500">{label}</span>
      <span className={has ? 'text-green-400 font-bold' : 'text-red-500'}>{val.toLocaleString()}</span>
   </div>
