@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { 
   Pickaxe, 
@@ -25,8 +25,10 @@ import {
   Cloud,
   Link2,
   AlertTriangle,
-  // Added missing Trash2 icon
-  Trash2
+  Trash2,
+  Sparkles,
+  FlaskConical,
+  Package
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { createClient } from '@supabase/supabase-js';
@@ -107,20 +109,17 @@ const INITIAL_GAME_STATE: GameState = {
 };
 
 // --- Supabase Configuration ---
-// Note: ENV variables must be configured in your development environment
-const SUPABASE_URL = (process.env as any).SUPABASE_URL || 'https://your-project.supabase.co';
-const SUPABASE_ANON_KEY = (process.env as any).SUPABASE_ANON_KEY || 'your-anon-key';
+const SUPABASE_URL = (process.env as any).SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = (process.env as any).SUPABASE_ANON_KEY || '';
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const isConfigured = SUPABASE_URL !== '' && SUPABASE_ANON_KEY !== '';
+const supabase = isConfigured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 const NebulaAPI = {
-  // Fetch all users from Supabase
   getUsers: async (): Promise<Record<string, UserData>> => {
+    if (!supabase) throw new Error("Supabase is not configured.");
     const { data, error } = await supabase.from('users').select('*');
-    if (error) {
-      console.error("Supabase Connection Error:", error);
-      throw new Error("Could not connect to Nebula Database (Supabase).");
-    }
+    if (error) throw error;
     const record: Record<string, UserData> = {};
     data?.forEach(u => {
       record[u.id] = {
@@ -133,8 +132,8 @@ const NebulaAPI = {
     return record;
   },
 
-  // Save or update user
   saveUser: async (user: UserData) => {
+    if (!supabase) throw new Error("Supabase is not configured.");
     const { error } = await supabase.from('users').upsert({
       id: user.id,
       password: user.password,
@@ -145,8 +144,8 @@ const NebulaAPI = {
     return { status: 'success' };
   },
 
-  // Partial update for game state performance
   updateGameState: async (userId: string, state: GameState) => {
+    if (!supabase) return;
     const { error } = await supabase
       .from('users')
       .update({ game_state: state })
@@ -154,35 +153,16 @@ const NebulaAPI = {
     if (error) console.error("Sync failure:", error);
   },
 
-  // Admin: Delete user
   adminDeleteUser: async (userId: string) => {
+    if (!supabase) throw new Error("Supabase is not configured.");
     const { error } = await supabase.from('users').delete().eq('id', userId);
     if (error) throw error;
   }
 };
 
-const SQL_SCHEMA = `
--- Run this in Supabase SQL Editor:
-CREATE TABLE public.users (
-    id TEXT PRIMARY KEY,
-    password TEXT NOT NULL,
-    role TEXT DEFAULT 'user',
-    game_state JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Allow all operations" ON public.users 
-FOR ALL USING (true) WITH CHECK (true);
-`;
-
-// --- Admin Sub-component ---
+// --- Admin Panel ---
 const AdminPanel = () => {
   const [users, setUsers] = useState<Record<string, UserData>>({});
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<UserData | null>(null);
-  const [adminSubTab, setAdminSubTab] = useState<'users' | 'database'>('users');
   const [loading, setLoading] = useState(false);
 
   const refreshUsers = useCallback(async () => {
@@ -190,169 +170,57 @@ const AdminPanel = () => {
     try {
       const data = await NebulaAPI.getUsers();
       setUsers(data);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
   }, []);
 
-  useEffect(() => {
-    refreshUsers();
-  }, [refreshUsers]);
-
-  const handleEdit = (u: UserData) => {
-    setEditingId(u.id);
-    setEditForm(JSON.parse(JSON.stringify(u)));
-  };
-
-  const handleSave = async () => {
-    if (editForm) {
-      setLoading(true);
-      try {
-        await NebulaAPI.saveUser(editForm);
-        setEditingId(null);
-        setEditForm(null);
-        await refreshUsers();
-      } catch (e) {
-        alert("Save failed");
-      } finally {
-        setLoading(false);
-      }
-    }
-  };
+  useEffect(() => { refreshUsers(); }, [refreshUsers]);
 
   const handleDelete = async (id: string) => {
     if (confirm(`Terminate access for ${id}?`)) {
       setLoading(true);
-      try {
-        await NebulaAPI.adminDeleteUser(id);
-        await refreshUsers();
-      } catch (e) {
-        alert("Delete failed");
-      } finally {
-        setLoading(false);
-      }
+      try { await NebulaAPI.adminDeleteUser(id); refreshUsers(); }
+      catch (e) { alert("Action failed"); setLoading(false); }
     }
   };
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-top-4 duration-500">
-      <div className="flex flex-col md:flex-row gap-4 items-stretch md:items-center justify-between bg-indigo-950/20 border border-indigo-500/20 p-6 rounded-3xl">
-        <div className="flex items-center gap-4">
-          <div className="p-3 bg-indigo-500/20 rounded-xl text-indigo-400"><ShieldCheck size={24} /></div>
-          <div>
-            <h2 className="orbitron text-lg font-black text-indigo-400 uppercase tracking-tighter">Galaxy Control</h2>
-            <p className="text-[10px] font-mono text-indigo-500/60 uppercase">Cloud Persistence: SUPABASE_REALTIME</p>
-          </div>
-        </div>
-        
-        <div className="flex bg-black/40 p-1 rounded-xl border border-white/5">
-          <button onClick={() => setAdminSubTab('users')} className={`px-4 py-2 rounded-lg text-[10px] orbitron font-bold transition-all ${adminSubTab === 'users' ? 'bg-indigo-500 text-white' : 'text-slate-500 hover:text-slate-300'}`}>USER NODES</button>
-          <button onClick={() => setAdminSubTab('database')} className={`px-4 py-2 rounded-lg text-[10px] orbitron font-bold transition-all ${adminSubTab === 'database' ? 'bg-indigo-500 text-white' : 'text-slate-500 hover:text-slate-300'}`}>SUPABASE SETUP</button>
+      <div className="flex items-center gap-4 bg-indigo-950/20 border border-indigo-500/20 p-6 rounded-3xl">
+        <ShieldCheck className="text-indigo-400" size={32} />
+        <div>
+          <h2 className="orbitron text-lg font-black text-white uppercase tracking-tighter">Command Center</h2>
+          <p className="text-[10px] font-mono text-indigo-500/60">Cloud Node Oversight Active</p>
         </div>
       </div>
 
-      {adminSubTab === 'users' ? (
-        <div className="glass border-white/5 rounded-3xl overflow-hidden">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-900/50 border-b border-white/5 text-[10px] uppercase font-black tracking-widest text-slate-500">
-                <th className="px-6 py-4">Pilot</th>
-                <th className="px-6 py-4">Credits</th>
-                <th className="px-6 py-4">Role</th>
-                <th className="px-6 py-4 text-right">Ops</th>
+      <div className="glass border-white/5 rounded-3xl overflow-hidden">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="bg-slate-900/50 border-b border-white/5 text-[10px] uppercase font-black tracking-widest text-slate-500">
+              <th className="px-6 py-4">Pilot</th>
+              <th className="px-6 py-4">Credits</th>
+              <th className="px-6 py-4 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-white/5">
+            {Object.values(users).map((u: UserData) => (
+              <tr key={u.id} className="hover:bg-white/5 transition-colors">
+                <td className="px-6 py-4">
+                  <span className="text-sm font-bold text-slate-200">{u.id}</span>
+                </td>
+                <td className="px-6 py-4 orbitron text-xs text-yellow-400">
+                  {Math.floor(u.gameState.credits).toLocaleString()} CR
+                </td>
+                <td className="px-6 py-4 text-right">
+                  <button onClick={() => handleDelete(u.id)} className="p-2 text-slate-500 hover:text-red-400 transition-all"><Trash2 size={16} /></button>
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {Object.values(users).map((u: UserData) => (
-                <tr key={u.id} className="hover:bg-white/5 transition-colors group">
-                  <td className="px-6 py-4">
-                    <div className="flex flex-col">
-                      <span className="text-sm font-bold text-slate-200">{u.id}</span>
-                      <span className="text-[9px] font-mono text-slate-500">Node Active</span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 orbitron text-xs font-bold text-yellow-400">
-                    {Math.floor(u.gameState.credits).toLocaleString()} CR
-                  </td>
-                  <td className="px-6 py-4">
-                    <span className={`text-[9px] px-2 py-1 rounded-full font-black uppercase ${u.role === 'admin' ? 'bg-red-500/20 text-red-400 border border-red-500/20' : 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/20'}`}>
-                      {u.role}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button onClick={() => handleEdit(u)} className="p-2 hover:bg-cyan-500/20 text-slate-500 hover:text-cyan-400 rounded-lg transition-all"><Edit3 size={16} /></button>
-                      <button onClick={() => handleDelete(u.id)} className="p-2 hover:bg-red-500/20 text-slate-500 hover:text-red-400 rounded-lg transition-all"><Trash2 size={16} /></button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {loading && <div className="p-10 text-center animate-pulse orbitron text-xs text-indigo-500 uppercase">Syncing with remote database...</div>}
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="glass p-6 rounded-3xl border-white/5">
-            <h3 className="orbitron text-xs font-black text-slate-400 mb-4 flex items-center gap-2"><Code2 size={14} /> SUPABASE MIGRATION SQL</h3>
-            <pre className="bg-black/60 p-4 rounded-xl text-[10px] font-mono text-indigo-400 border border-indigo-500/10 overflow-x-auto max-h-[300px]">
-              {SQL_SCHEMA}
-            </pre>
-            <div className="mt-4 flex gap-4">
-              <button onClick={() => navigator.clipboard.writeText(SQL_SCHEMA)} className="text-[10px] font-mono text-indigo-600 hover:text-indigo-400 transition-all flex items-center gap-2">
-                <RefreshCw size={12} /> COPY SQL
-              </button>
-              <a href="https://supabase.com/dashboard" target="_blank" className="text-[10px] font-mono text-slate-500 hover:text-white transition-all flex items-center gap-2">
-                <Link2 size={12} /> OPEN SUPABASE
-              </a>
-            </div>
-          </div>
-          <div className="glass p-6 rounded-3xl border-white/5 space-y-4">
-            <h3 className="orbitron text-xs font-black text-slate-400 mb-4 flex items-center gap-2"><Terminal size={14} /> CLOUD STATUS</h3>
-            <div className="space-y-4">
-              <div className="bg-black/40 p-4 rounded-xl border border-white/5">
-                 <span className="text-[9px] text-slate-500 block uppercase mb-1">Target Instance</span>
-                 <code className="text-[10px] text-indigo-500 break-all">{SUPABASE_URL}</code>
-              </div>
-              <div className="p-4 bg-indigo-500/5 border border-indigo-500/10 rounded-xl">
-                 <p className="text-[10px] text-indigo-400 font-mono leading-relaxed">
-                   Tüm oyun verileri Supabase'deki 'users' tablosunda JSONB sütununda atomik olarak saklanır. localstorage bu versiyonda tamamen devre dışıdır.
-                 </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {editingId && editForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
-          <div className="max-w-2xl w-full glass border-white/10 rounded-[2rem] p-8 shadow-2xl relative overflow-y-auto max-h-[90vh]">
-            <button onClick={() => setEditingId(null)} className="absolute top-6 right-6 text-slate-500 hover:text-white"><X /></button>
-            <h3 className="orbitron text-xl font-black text-white mb-8 italic">OVERRIDE PILOT: {editForm.id}</h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <label className="block">
-                  <span className="text-[10px] font-black text-slate-500 uppercase">Credits</span>
-                  <input type="number" value={editForm.gameState.credits} onChange={e => setEditForm({...editForm, gameState: {...editForm.gameState, credits: Number(e.target.value)}})} className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-3 text-sm text-yellow-400 outline-none" />
-                </label>
-                <label className="block">
-                  <span className="text-[10px] font-black text-slate-500 uppercase">Role</span>
-                  <select value={editForm.role} onChange={e => setEditForm({...editForm, role: e.target.value as 'user' | 'admin'})} className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-3 text-sm text-white outline-none">
-                    <option value="user">USER</option>
-                    <option value="admin">ADMIN</option>
-                  </select>
-                </label>
-            </div>
-
-            <button onClick={handleSave} disabled={loading} className="w-full mt-10 bg-indigo-600 hover:bg-indigo-500 py-4 rounded-2xl font-black orbitron text-white text-sm transition-all disabled:opacity-50 flex items-center justify-center gap-3">
-              {loading && <RefreshCw size={16} className="animate-spin" />}
-              {loading ? 'COMMITTING...' : 'UPDATE REMOTE DATABASE'}
-            </button>
-          </div>
-        </div>
-      )}
+            ))}
+          </tbody>
+        </table>
+        {loading && <div className="p-10 text-center animate-pulse orbitron text-[10px] text-indigo-500 uppercase">Updating Cloud State...</div>}
+      </div>
     </div>
   );
 };
@@ -373,25 +241,18 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
     try {
       const users = await NebulaAPI.getUsers();
       
-      // Special Logic for admin:admin
       if (userId === 'admin' && password === 'admin' && !users['admin']) {
         const adminUser: UserData = { id: 'admin', password: 'admin', role: 'admin', gameState: INITIAL_GAME_STATE };
         await NebulaAPI.saveUser(adminUser);
         onLogin(adminUser);
-        setLoading(false);
         return;
       }
 
       if (isRegister) {
         if (users[userId]) {
-          setError('Pilot ID already registered in database.');
+          setError('Pilot ID already registered.');
         } else {
-          const newUser: UserData = { 
-            id: userId, 
-            password, 
-            role: 'user', 
-            gameState: INITIAL_GAME_STATE 
-          };
+          const newUser: UserData = { id: userId, password, role: 'user', gameState: INITIAL_GAME_STATE };
           await NebulaAPI.saveUser(newUser);
           onLogin(newUser);
         }
@@ -400,44 +261,34 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
         if (u && u.password === password) {
           onLogin(u);
         } else {
-          setError('Access Denied: Invalid Pilot ID or Password.');
+          setError('Invalid Identification Credentials.');
         }
       }
-    } catch (e) {
-      setError('Connection Failure: Supabase database is unreachable.');
+    } catch (e: any) {
+      setError(isConfigured ? (e.message || 'Database link error.') : 'Supabase is not configured in Vercel settings.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-black p-4 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-900/10 via-black to-black">
-      <div className="max-w-md w-full glass rounded-[2rem] p-10 border border-indigo-500/20 shadow-[0_0_100px_rgba(79,70,229,0.1)]">
+    <div className="min-h-screen flex items-center justify-center bg-black p-4 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-950/20 via-black to-black">
+      <div className="max-w-md w-full glass rounded-[2rem] p-10 border border-indigo-500/20 shadow-2xl">
         <div className="text-center mb-8">
           <Globe className="text-indigo-400 w-16 h-16 mx-auto mb-6 animate-pulse" />
           <h1 className="orbitron text-2xl font-black text-white uppercase italic tracking-tighter">Nebula <span className="text-indigo-500">Cloud</span></h1>
-          <p className="text-slate-500 text-[9px] font-mono mt-2 uppercase tracking-widest">PostgreSQL JSONB persistence active</p>
+          <p className="text-slate-500 text-[9px] font-mono mt-2 uppercase tracking-widest">Distributed Database Persistence</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-1">
-            <span className="text-[9px] font-black text-indigo-500/60 uppercase ml-2">Pilot Identification</span>
-            <input required type="text" placeholder="Pilot ID" value={userId} onChange={e => setUserId(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3 text-indigo-50 focus:border-indigo-500 outline-none transition-all font-mono text-sm" />
-          </div>
-          <div className="space-y-1">
-            <span className="text-[9px] font-black text-indigo-500/60 uppercase ml-2">Access Key</span>
-            <input required type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3 text-indigo-50 focus:border-indigo-500 outline-none transition-all font-mono text-sm" />
-          </div>
-          {error && (
-            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-center gap-2 text-red-400 text-[10px] font-mono">
-              <AlertTriangle size={14} /> {error}
-            </div>
-          )}
+          <input required type="text" placeholder="Pilot ID" value={userId} onChange={e => setUserId(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3 text-indigo-50 focus:border-indigo-500 outline-none transition-all font-mono text-sm" />
+          <input required type="password" placeholder="Access Key" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3 text-indigo-50 focus:border-indigo-500 outline-none transition-all font-mono text-sm" />
+          {error && <div className="p-3 bg-red-500/10 text-red-400 text-[10px] font-mono border border-red-500/20 rounded-lg">{error}</div>}
           <button disabled={loading} className="w-full bg-indigo-600 hover:bg-indigo-500 py-4 rounded-xl font-black orbitron text-white transition-all disabled:opacity-50 flex items-center justify-center gap-2 mt-4 shadow-lg shadow-indigo-600/20">
-            {loading ? <RefreshCw size={16} className="animate-spin" /> : (isRegister ? 'REGISTER PILOT' : 'ESTABLISH LINK')}
+            {loading ? <RefreshCw size={16} className="animate-spin" /> : (isRegister ? 'INITIATE NODE' : 'ESTABLISH LINK')}
           </button>
         </form>
-        <button onClick={() => setIsRegister(!isRegister)} className="w-full mt-6 text-slate-500 text-[10px] hover:text-indigo-400 font-mono uppercase tracking-widest transition-colors">
-          {isRegister ? '> Back to Login' : '> Register new Cloud Node'}
+        <button onClick={() => setIsRegister(!isRegister)} className="w-full mt-6 text-slate-500 text-[10px] hover:text-indigo-400 font-mono uppercase tracking-widest">
+          {isRegister ? '> Return to Login' : '> Register new Pilot Node'}
         </button>
       </div>
     </div>
@@ -452,7 +303,38 @@ const App = () => {
   const [aiAdvice, setAiAdvice] = useState<string>("Analyzing market trends...");
   const [syncing, setSyncing] = useState(false);
 
-  // Debounced Remote Sync
+  // Gemini Integration
+  const fetchAiAdvice = async () => {
+    try {
+      // Correctly initialize GoogleGenAI with API key from environment
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      const prompt = `Act as an elite galactic trader AI. Given the following game state:
+      Credits: ${gameState.credits}
+      Resources: ${JSON.stringify(gameState.resources)}
+      Upgrades: ${JSON.stringify(gameState.upgrades)}
+      Market: ${JSON.stringify(gameState.market)}
+      Give a short, 1-sentence strategic advice for the player in a cool, sci-fi tone. Focus on what they should do next to grow fastest.`;
+      
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt
+      });
+      // Extract text from GenerateContentResponse
+      setAiAdvice(response.text || "Scanning sector for opportunities...");
+    } catch (e) {
+      setAiAdvice("Nebula link unstable. Strategic analysis offline.");
+    }
+  };
+
+  useEffect(() => {
+    if (currentUser) {
+      const interval = setInterval(fetchAiAdvice, 30000);
+      fetchAiAdvice();
+      return () => clearInterval(interval);
+    }
+  }, [currentUser]);
+
+  // Sync with Supabase
   useEffect(() => {
     if (currentUser) {
       const syncTimeout = setTimeout(async () => {
@@ -474,7 +356,7 @@ const App = () => {
     [gameState.upgrades.storageLevel, gameState.technologies.nanoStorage]
   );
 
-  // Auto-Production Loop
+  // Passive Generation
   useEffect(() => {
     if (!currentUser) return;
     const interval = setInterval(() => {
@@ -482,13 +364,19 @@ const App = () => {
         const now = Date.now();
         const delta = (now - prev.lastUpdate) / 1000;
         
+        // Passive mining rates
+        const ironRate = prev.upgrades.autoMiners * 1;
+        const plasmaRate = prev.upgrades.plasmaExtractors * 0.5;
+        const crystalRate = prev.upgrades.crystalRefineries * 0.1;
+        const dataRate = prev.upgrades.researchHubs * 0.2;
+
         return {
           ...prev,
           resources: {
-            iron: Math.min(currentStorageLimit, prev.resources.iron + (prev.upgrades.autoMiners * 1 * delta)),
-            plasma: Math.min(currentStorageLimit, prev.resources.plasma + (prev.upgrades.plasmaExtractors * 0.5 * delta)),
-            crystal: Math.min(currentStorageLimit, prev.resources.crystal + (prev.upgrades.crystalRefineries * 0.1 * delta)),
-            dataBits: prev.resources.dataBits + (prev.upgrades.researchHubs * 0.2 * delta)
+            iron: Math.min(currentStorageLimit, prev.resources.iron + (ironRate * delta)),
+            plasma: Math.min(currentStorageLimit, prev.resources.plasma + (plasmaRate * delta)),
+            crystal: Math.min(currentStorageLimit, prev.resources.crystal + (crystalRate * delta)),
+            dataBits: prev.resources.dataBits + (dataRate * delta)
           },
           lastUpdate: now
         };
@@ -497,275 +385,413 @@ const App = () => {
     return () => clearInterval(interval);
   }, [currentUser, currentStorageLimit]);
 
-  // Market Dynamics Loop
+  // Market Fluctuation
   useEffect(() => {
     if (!currentUser) return;
-    const marketInterval = setInterval(() => {
+    const interval = setInterval(() => {
       setGameState(prev => {
         const newMarket = { ...prev.market };
-        (Object.keys(BASE_MARKET_PRICES) as Array<keyof typeof BASE_MARKET_PRICES>).forEach(key => {
-          const base = BASE_MARKET_PRICES[key];
-          const demandFactor = 0.5 + (Math.random() * (prev.market[key].demand / 50));
-          const nextPrice = Math.max(1, Math.round(base * demandFactor * (0.8 + Math.random() * 0.4) * 10) / 10);
-          newMarket[key] = { 
-            price: nextPrice, 
-            trend: nextPrice > prev.market[key].price ? 'up' : 'down', 
-            demand: Math.max(10, Math.min(100, prev.market[key].demand + (Math.random() * 20 - 10))) 
-          };
+        Object.keys(newMarket).forEach(key => {
+          const m = newMarket[key];
+          const change = (Math.random() - 0.45) * 2;
+          m.price = Math.max(1, m.price + change);
+          m.trend = change > 0 ? 'up' : 'down';
         });
         return { ...prev, market: newMarket };
       });
-    }, 15000);
-    return () => clearInterval(marketInterval);
+    }, 5000);
+    return () => clearInterval(interval);
   }, [currentUser]);
 
-  if (!currentUser) return <AuthScreen onLogin={u => { setCurrentUser(u); setGameState(u.gameState); }} />;
-
   const mineManual = () => {
-    if (gameState.resources.iron < currentStorageLimit) {
-      setGameState(prev => ({
-        ...prev,
-        resources: { ...prev.resources, iron: Math.min(currentStorageLimit, prev.resources.iron + (prev.upgrades.pickaxePower + (prev.technologies.neuralMining * 2))) }
-      }));
-    }
-  };
-
-  const sellResource = (type: string) => {
-    const amount = (gameState.resources as any)[type];
-    if (amount <= 0) return;
-    const taxedProfit = (amount * gameState.market[type].price) * (1 - taxRate);
     setGameState(prev => ({
       ...prev,
-      credits: prev.credits + taxedProfit,
-      resources: { ...prev.resources, [type]: 0 }
+      resources: {
+        ...prev.resources,
+        iron: Math.min(currentStorageLimit, prev.resources.iron + prev.upgrades.pickaxePower)
+      }
     }));
   };
 
-  const buyUpgrade = (key: string, costs: any) => {
-    const cost = costs((gameState.upgrades as any)[key] || 0);
-    if (gameState.credits >= cost) {
-      setGameState(prev => ({
-        ...prev,
-        credits: prev.credits - cost,
-        upgrades: { ...prev.upgrades, [key]: (prev.upgrades as any)[key] + 1 }
-      }));
-    }
+  const sellResource = (res: keyof ResourceState) => {
+    const amount = gameState.resources[res];
+    if (amount <= 0) return;
+    const price = (gameState.market[res]?.price || 1) * (1 - taxRate);
+    const earnings = amount * price;
+
+    setGameState(prev => ({
+      ...prev,
+      credits: prev.credits + earnings,
+      resources: { ...prev.resources, [res]: 0 }
+    }));
   };
 
-  const researchTech = (key: string, costs: any) => {
-    const cost = costs(gameState.technologies[key as keyof TechState]);
-    if (gameState.resources.dataBits >= cost) {
-      setGameState(prev => ({
-        ...prev,
-        resources: { ...prev.resources, dataBits: prev.resources.dataBits - cost },
-        technologies: { ...prev.technologies, [key]: (prev.technologies as any)[key] + 1 }
-      }));
-    }
+  const buyUpgrade = (key: keyof GameState['upgrades'], cost: number) => {
+    if (gameState.credits < cost) return;
+    setGameState(prev => ({
+      ...prev,
+      credits: prev.credits - cost,
+      upgrades: { ...prev.upgrades, [key]: prev.upgrades[key] + 1 }
+    }));
   };
 
-  const getAiAdvice = async () => {
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `Supabase kullanan Nebula Miner oyununda danışmansın. Vergi: %${(taxRate*100).toFixed(0)}, Kredi: ${gameState.credits.toFixed(0)}. Bir borsa tavsiyesi ver.`;
-      const res = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
-      setAiAdvice(res.text || "Connection lost...");
-    } catch { setAiAdvice("Uplink unavailable."); }
+  const buyTech = (key: keyof TechState, cost: number) => {
+    if (gameState.resources.dataBits < cost) return;
+    setGameState(prev => ({
+      ...prev,
+      resources: { ...prev.resources, dataBits: prev.resources.dataBits - cost },
+      technologies: { ...prev.technologies, [key]: prev.technologies[key] + 1 }
+    }));
   };
+
+  if (!currentUser) return <AuthScreen onLogin={u => { setCurrentUser(u); setGameState(u.gameState); }} />;
 
   return (
-    <div className="min-h-screen bg-[#020617] text-slate-100 p-4 md:p-8 font-sans">
+    <div className="min-h-screen bg-[#020617] text-slate-100 p-4 md:p-8 font-sans selection:bg-indigo-500/30">
       <div className="max-w-7xl mx-auto flex flex-col gap-6">
         
-        <header className="glass rounded-3xl p-6 flex flex-col md:flex-row justify-between items-center gap-4 border-indigo-500/10 shadow-2xl">
+        {/* Header */}
+        <header className="glass rounded-3xl p-6 flex flex-col md:flex-row justify-between items-center gap-4 border-indigo-500/10 shadow-2xl relative overflow-hidden group">
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-indigo-500 to-transparent opacity-50" />
           <div className="flex items-center gap-6">
-            <div className="p-4 bg-gradient-to-br from-indigo-600 to-indigo-800 rounded-2xl shadow-lg shadow-indigo-500/20">
+            <div className="p-4 bg-indigo-600 rounded-2xl shadow-lg shadow-indigo-600/30 group-hover:scale-110 transition-transform duration-500">
               <Cloud className="w-8 h-8 text-white" />
             </div>
             <div>
               <h1 className="orbitron text-2xl font-black text-white italic tracking-tighter">Nebula <span className="text-indigo-400">Cloud</span></h1>
               <div className="flex items-center gap-3 mt-1">
-                 <span className="text-[9px] font-mono text-slate-500 tracking-[0.2em] flex items-center gap-2">
-                   <span className="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_8px_rgba(34,197,94,0.6)]" /> SUPABASE LINK: STABLE
+                 <span className="text-[9px] font-mono text-slate-500 tracking-widest flex items-center gap-2">
+                   <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" /> SUPABASE LINK ACTIVE
                  </span>
-                 {syncing && <span className="text-[9px] font-mono text-indigo-400 animate-pulse flex items-center gap-1"><RefreshCw size={10} className="animate-spin" /> REMOTE_SYNC...</span>}
+                 {syncing && <span className="text-[9px] font-mono text-indigo-400 animate-pulse flex items-center gap-1"><RefreshCw size={10} className="animate-spin" /> SYNCING...</span>}
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="bg-slate-900/80 px-6 py-3 rounded-2xl border border-indigo-500/20 shadow-inner flex flex-col items-end">
+          
+          <div className="flex items-center gap-4 w-full md:w-auto">
+            <div className="bg-slate-900/80 px-6 py-3 rounded-2xl border border-indigo-500/20 flex flex-col items-end min-w-[140px] shadow-inner">
               <span className="text-[8px] font-black text-indigo-500 uppercase tracking-widest">Global Credits</span>
-              <span className="orbitron text-lg font-bold text-white">{Math.floor(gameState.credits).toLocaleString()} CR</span>
+              <span className="orbitron text-lg font-bold text-white tracking-tight">{Math.floor(gameState.credits).toLocaleString()} CR</span>
             </div>
-            <button onClick={() => window.location.reload()} className="p-4 hover:bg-red-500/10 rounded-2xl text-slate-600 hover:text-red-400 transition-all"><LogOut size={20} /></button>
+            <button onClick={() => window.location.reload()} className="p-4 hover:bg-red-500/10 rounded-2xl text-slate-600 hover:text-red-400 transition-all border border-transparent hover:border-red-500/20 group">
+              <LogOut size={20} className="group-hover:-translate-x-1 transition-transform" />
+            </button>
           </div>
         </header>
 
-        <section className="bg-indigo-950/20 border-y border-indigo-500/10 p-4 overflow-hidden relative font-mono text-[10px]">
-           <div className="flex items-center gap-8 animate-marquee whitespace-nowrap">
-             {(Object.entries(gameState.market) as [string, any][]).map(([key, val]) => (
-                <div key={key} className="flex gap-2">
-                  <span className="text-indigo-500/60 uppercase">{key}:</span>
-                  <span className={val.trend === 'up' ? 'text-green-400' : 'text-red-400'}>{val.price} CR</span>
-                </div>
-             ))}
-             <span className="text-slate-600">| SUPABASE_DB_STABLE | JSONB_STORAGE_ACTIVE | TAX_RATE: %{(taxRate*100).toFixed(1)} |</span>
-           </div>
-        </section>
-
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-           <aside className="lg:col-span-1 glass rounded-3xl p-6 border-indigo-500/10 h-fit">
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="orbitron text-[10px] font-black text-indigo-400 tracking-widest uppercase">Consultant</h3>
-                <Target size={16} className="text-indigo-500 animate-spin-slow" />
-              </div>
-              <p className="text-[11px] text-slate-300 italic font-mono mb-6 leading-relaxed">"{aiAdvice}"</p>
-              <button onClick={getAiAdvice} className="w-full py-3 bg-indigo-600/10 hover:bg-indigo-600 text-indigo-400 hover:text-white border border-indigo-500/30 font-bold orbitron text-[10px] rounded-xl transition-all">ESTABLISH UPLINK</button>
-           </aside>
-
-           <main className="lg:col-span-3 flex flex-col gap-6">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                 <StatCard icon={<Database />} label="Iron" val={gameState.resources.iron} color="text-slate-400" limit={currentStorageLimit} />
-                 <StatCard icon={<Zap />} label="Plasma" val={gameState.resources.plasma} color="text-purple-400" limit={currentStorageLimit} />
-                 <StatCard icon={<Rocket />} label="Crystal" val={gameState.resources.crystal} color="text-cyan-400" limit={currentStorageLimit} />
-                 <StatCard icon={<Binary />} label="Data" val={gameState.resources.dataBits} color="text-blue-400" />
-              </div>
-
-              <nav className="flex bg-slate-900/50 p-1 rounded-2xl self-start border border-white/5 overflow-x-auto">
-                <NavBtn active={activeTab === 'mine'} onClick={() => setActiveTab('mine')} icon={<Pickaxe />} label="Mine" />
-                <NavBtn active={activeTab === 'shop'} onClick={() => setActiveTab('shop')} icon={<ShoppingBag />} label="Shop" />
-                <NavBtn active={activeTab === 'tech'} onClick={() => setActiveTab('tech')} icon={<Microchip />} label="Tech" />
-                <NavBtn active={activeTab === 'market'} onClick={() => setActiveTab('market')} icon={<BarChart3 />} label="Trade" />
-                {currentUser.role === 'admin' && <NavBtn active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} icon={<ShieldCheck className="text-red-500" />} label="Admin" activeColor="bg-red-600" />}
-              </nav>
-
-              <div className="min-h-[400px]">
-                {activeTab === 'mine' && (
-                  <div className="flex flex-col items-center justify-center h-full animate-in fade-in zoom-in duration-500">
-                    <button onClick={mineManual} className="relative w-64 h-64 glass rounded-full flex flex-col items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-[0_0_50px_rgba(79,70,229,0.1)] group border-2 border-indigo-500/20">
-                      <div className="absolute inset-0 border-[8px] border-t-indigo-500/40 border-r-transparent border-b-transparent border-l-transparent rounded-full animate-spin-slow" />
-                      <Pickaxe size={48} className="text-indigo-400 mb-2 group-hover:rotate-12 transition-transform" />
-                      <span className="orbitron font-black text-white text-[11px] tracking-widest">MANUAL EXTRACTION</span>
-                    </button>
-                  </div>
-                )}
-
-                {activeTab === 'shop' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in slide-in-from-bottom-4 duration-500">
-                    <ShopItem title="Mining Drones" icon={<Cpu />} lvl={gameState.upgrades.autoMiners} cost={UPGRADE_COSTS.autoMiners(gameState.upgrades.autoMiners)} onBuy={() => buyUpgrade('autoMiners', UPGRADE_COSTS.autoMiners)} canBuy={gameState.credits >= UPGRADE_COSTS.autoMiners(gameState.upgrades.autoMiners)} />
-                    <ShopItem title="Plasma Core" icon={<Zap />} lvl={gameState.upgrades.plasmaExtractors} cost={UPGRADE_COSTS.plasmaExtractors(gameState.upgrades.plasmaExtractors)} onBuy={() => buyUpgrade('plasmaExtractors', UPGRADE_COSTS.plasmaExtractors)} canBuy={gameState.credits >= UPGRADE_COSTS.plasmaExtractors(gameState.upgrades.plasmaExtractors)} />
-                    <ShopItem title="Research Unit" icon={<Binary />} lvl={gameState.upgrades.researchHubs} cost={UPGRADE_COSTS.researchHubs(gameState.upgrades.researchHubs)} onBuy={() => buyUpgrade('researchHubs', UPGRADE_COSTS.researchHubs)} canBuy={gameState.credits >= UPGRADE_COSTS.researchHubs(gameState.upgrades.researchHubs)} />
-                    <ShopItem title="Cargo Expansion" icon={<Database />} lvl={gameState.upgrades.storageLevel} cost={UPGRADE_COSTS.storage(gameState.upgrades.storageLevel)} onBuy={() => buyUpgrade('storageLevel', UPGRADE_COSTS.storage)} canBuy={gameState.credits >= UPGRADE_COSTS.storage(gameState.upgrades.storageLevel)} />
-                  </div>
-                )}
-
-                {activeTab === 'tech' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in zoom-in duration-500">
-                    <TechItem title="Neural Mining" desc="Increases manual extraction power via cybernetics." lvl={gameState.technologies.neuralMining} cost={TECH_COSTS.neuralMining(gameState.technologies.neuralMining)} onBuy={() => researchTech('neuralMining', TECH_COSTS.neuralMining)} canBuy={gameState.resources.dataBits >= TECH_COSTS.neuralMining(gameState.technologies.neuralMining)} />
-                    <TechItem title="Market Optimization" desc="Global trade tax reduction through AI lobbying." lvl={gameState.technologies.taxOptimization} cost={TECH_COSTS.taxOptimization(gameState.technologies.taxOptimization)} onBuy={() => researchTech('taxOptimization', TECH_COSTS.taxOptimization)} canBuy={gameState.resources.dataBits >= TECH_COSTS.taxOptimization(gameState.technologies.taxOptimization)} />
-                  </div>
-                )}
-
-                {activeTab === 'market' && (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-in slide-in-from-right-4 duration-500">
-                    {Object.entries(BASE_MARKET_PRICES).map(([key]) => (
-                       <MarketCard key={key} resource={key} data={gameState.market[key]} amount={(gameState.resources as any)[key]} onSell={() => sellResource(key)} tax={taxRate} />
-                    ))}
-                  </div>
-                )}
-
-                {activeTab === 'admin' && currentUser.role === 'admin' && <AdminPanel />}
-              </div>
-           </main>
+        {/* AI Ticker */}
+        <div className="bg-indigo-950/20 border border-indigo-500/20 rounded-2xl p-4 flex items-center gap-4 group overflow-hidden">
+          <div className="bg-indigo-500 p-2 rounded-lg animate-pulse">
+            <Sparkles size={16} className="text-white" />
+          </div>
+          <p className="text-xs font-mono text-indigo-300 italic tracking-wide truncate">
+            {aiAdvice}
+          </p>
         </div>
 
-        <footer className="text-center py-10 opacity-30 orbitron text-[8px] tracking-[0.5em] uppercase">
-          Cloud Core v4.0 - Supabase Persistence Layer
+        {/* Navigation */}
+        <nav className="flex bg-slate-900/50 p-1.5 rounded-2xl self-start border border-white/5 overflow-x-auto no-scrollbar max-w-full">
+          <NavBtn active={activeTab === 'mine'} onClick={() => setActiveTab('mine')} icon={<Pickaxe />} label="Extraction" />
+          <NavBtn active={activeTab === 'shop'} onClick={() => setActiveTab('shop')} icon={<ShoppingBag />} label="Upgrades" />
+          <NavBtn active={activeTab === 'tech'} onClick={() => setActiveTab('tech')} icon={<FlaskConical />} label="Tech Tree" />
+          <NavBtn active={activeTab === 'market'} onClick={() => setActiveTab('market')} icon={<BarChart3 />} label="Exchange" />
+          {currentUser.role === 'admin' && <NavBtn active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} icon={<ShieldCheck className="text-red-500" />} label="Control" activeColor="bg-red-600" />}
+        </nav>
+
+        {/* Main Interface */}
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          
+          {/* Sidebar Stats */}
+          <aside className="lg:col-span-1 space-y-4">
+            <div className="glass p-6 rounded-3xl border-indigo-500/10 space-y-6">
+              <div className="flex items-center justify-between">
+                <h3 className="orbitron text-[10px] font-black text-slate-500 uppercase tracking-widest">Cargo Hold</h3>
+                <span className="text-[10px] font-mono text-indigo-400">{Math.floor(gameState.resources.iron + gameState.resources.plasma + gameState.resources.crystal).toLocaleString()} / {currentStorageLimit.toLocaleString()}</span>
+              </div>
+              
+              <div className="space-y-4">
+                <ResourceBar label="Iron" amount={gameState.resources.iron} limit={currentStorageLimit} color="bg-slate-400" icon={<Database size={12}/>} />
+                <ResourceBar label="Plasma" amount={gameState.resources.plasma} limit={currentStorageLimit} color="bg-indigo-400" icon={<Zap size={12}/>} />
+                <ResourceBar label="Crystal" amount={gameState.resources.crystal} limit={currentStorageLimit} color="bg-cyan-400" icon={<Target size={12}/>} />
+                <ResourceBar label="Data Bits" amount={gameState.resources.dataBits} limit={Infinity} color="bg-yellow-400" icon={<Binary size={12}/>} />
+              </div>
+            </div>
+
+            <div className="glass p-6 rounded-3xl border-indigo-500/10 space-y-2">
+               <h3 className="orbitron text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4">Market Index</h3>
+               {/* Fixed type errors by adding explicit type for data from Object.entries */}
+               {Object.entries(gameState.market).map(([name, data]: [string, any]) => (
+                 <div key={name} className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 transition-colors">
+                   <span className="text-xs font-bold text-slate-300 uppercase">{name}</span>
+                   <div className="flex items-center gap-2">
+                     <span className="orbitron text-[10px] text-white">{data.price.toFixed(1)} CR</span>
+                     {data.trend === 'up' ? <TrendingUp size={12} className="text-green-500" /> : <TrendingDown size={12} className="text-red-500" />}
+                   </div>
+                 </div>
+               ))}
+            </div>
+          </aside>
+
+          {/* Content Area */}
+          <main className="lg:col-span-3 min-h-[600px]">
+            {activeTab === 'mine' && (
+              <div className="flex flex-col items-center justify-center h-full gap-8 animate-in zoom-in-95 duration-500">
+                <div className="relative group">
+                  <div className="absolute -inset-1 bg-gradient-to-r from-indigo-500 to-cyan-500 rounded-full blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
+                  <button 
+                    onClick={mineManual}
+                    className="relative w-64 h-64 bg-slate-900 rounded-full flex flex-col items-center justify-center border border-white/10 hover:border-indigo-500/50 shadow-2xl transition-all active:scale-95 group overflow-hidden"
+                  >
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-500/10 via-transparent to-transparent group-hover:from-indigo-500/20 transition-all" />
+                    <Pickaxe size={64} className="text-indigo-400 mb-4 group-hover:rotate-12 transition-transform duration-300" />
+                    <span className="orbitron font-black text-white text-[10px] tracking-widest mb-1">EXTRACT ORE</span>
+                    <span className="text-[10px] font-mono text-slate-500 uppercase">Yield: {gameState.upgrades.pickaxePower} iron/click</span>
+                  </button>
+                </div>
+                
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full">
+                  <StatMini label="Manual Power" value={gameState.upgrades.pickaxePower} sub="IRON / CLICK" />
+                  <StatMini label="Auto Yield" value={gameState.upgrades.autoMiners} sub="IRON / SEC" />
+                  <StatMini label="Plasma Feed" value={gameState.upgrades.plasmaExtractors} sub="UNIT / SEC" />
+                  <StatMini label="Refinery Rank" value={gameState.upgrades.crystalRefineries} sub="UNIT / SEC" />
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'shop' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in slide-in-from-right-8 duration-500">
+                <ShopItem 
+                  title="Mining Drills" 
+                  desc="Automated iron extraction units." 
+                  lvl={gameState.upgrades.autoMiners} 
+                  cost={Math.floor(50 * Math.pow(1.5, gameState.upgrades.autoMiners))} 
+                  icon={<Cpu />} 
+                  onBuy={() => buyUpgrade('autoMiners', Math.floor(50 * Math.pow(1.5, gameState.upgrades.autoMiners)))}
+                  canBuy={gameState.credits >= 50 * Math.pow(1.5, gameState.upgrades.autoMiners)} 
+                />
+                <ShopItem 
+                  title="Hyper Pickaxe" 
+                  desc="Boosts manual extraction efficiency." 
+                  lvl={gameState.upgrades.pickaxePower} 
+                  cost={Math.floor(20 * Math.pow(1.8, gameState.upgrades.pickaxePower - 1))} 
+                  icon={<Pickaxe />} 
+                  onBuy={() => buyUpgrade('pickaxePower', Math.floor(20 * Math.pow(1.8, gameState.upgrades.pickaxePower - 1)))}
+                  canBuy={gameState.credits >= 20 * Math.pow(1.8, gameState.upgrades.pickaxePower - 1)} 
+                />
+                <ShopItem 
+                  title="Plasma Extractors" 
+                  desc="Gathers rare plasma from atmosphere." 
+                  lvl={gameState.upgrades.plasmaExtractors} 
+                  cost={Math.floor(200 * Math.pow(1.6, gameState.upgrades.plasmaExtractors))} 
+                  icon={<Zap />} 
+                  onBuy={() => buyUpgrade('plasmaExtractors', Math.floor(200 * Math.pow(1.6, gameState.upgrades.plasmaExtractors)))}
+                  canBuy={gameState.credits >= 200 * Math.pow(1.6, gameState.upgrades.plasmaExtractors)} 
+                />
+                <ShopItem 
+                  title="Crystal Refineries" 
+                  desc="Processes high-value crystals." 
+                  lvl={gameState.upgrades.crystalRefineries} 
+                  cost={Math.floor(1000 * Math.pow(2, gameState.upgrades.crystalRefineries))} 
+                  icon={<Target />} 
+                  onBuy={() => buyUpgrade('crystalRefineries', Math.floor(1000 * Math.pow(2, gameState.upgrades.crystalRefineries)))}
+                  canBuy={gameState.credits >= 1000 * Math.pow(2, gameState.upgrades.crystalRefineries)} 
+                />
+                <ShopItem 
+                  title="Expansion Modules" 
+                  desc="Increases cargo storage capacity." 
+                  lvl={gameState.upgrades.storageLevel} 
+                  cost={Math.floor(150 * Math.pow(2.2, gameState.upgrades.storageLevel - 1))} 
+                  icon={<Package />} 
+                  onBuy={() => buyUpgrade('storageLevel', Math.floor(150 * Math.pow(2.2, gameState.upgrades.storageLevel - 1)))}
+                  canBuy={gameState.credits >= 150 * Math.pow(2.2, gameState.upgrades.storageLevel - 1)} 
+                />
+                <ShopItem 
+                  title="Research Hubs" 
+                  desc="Generates Data Bits for technology." 
+                  lvl={gameState.upgrades.researchHubs} 
+                  cost={Math.floor(500 * Math.pow(1.8, gameState.upgrades.researchHubs))} 
+                  icon={<Binary />} 
+                  onBuy={() => buyUpgrade('researchHubs', Math.floor(500 * Math.pow(1.8, gameState.upgrades.researchHubs)))}
+                  canBuy={gameState.credits >= 500 * Math.pow(1.8, gameState.upgrades.researchHubs)} 
+                />
+              </div>
+            )}
+
+            {activeTab === 'tech' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in slide-in-from-right-8 duration-500">
+                <TechItem 
+                  title="Tax Optimization" 
+                  desc="Reduces market transaction fees." 
+                  lvl={gameState.technologies.taxOptimization} 
+                  cost={Math.floor(100 * Math.pow(2, gameState.technologies.taxOptimization))} 
+                  onBuy={() => buyTech('taxOptimization', Math.floor(100 * Math.pow(2, gameState.technologies.taxOptimization)))}
+                  canBuy={gameState.resources.dataBits >= 100 * Math.pow(2, gameState.technologies.taxOptimization)}
+                />
+                <TechItem 
+                  title="Nano Storage" 
+                  desc="Massively increases storage efficiency." 
+                  lvl={gameState.technologies.nanoStorage} 
+                  cost={Math.floor(250 * Math.pow(2.5, gameState.technologies.nanoStorage))} 
+                  onBuy={() => buyTech('nanoStorage', Math.floor(250 * Math.pow(2.5, gameState.technologies.nanoStorage)))}
+                  canBuy={gameState.resources.dataBits >= 250 * Math.pow(2.5, gameState.technologies.nanoStorage)}
+                />
+              </div>
+            )}
+
+            {activeTab === 'market' && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-in fade-in duration-500">
+                <MarketCard 
+                  resource="iron" 
+                  price={gameState.market.iron.price} 
+                  amount={gameState.resources.iron} 
+                  onSell={() => sellResource('iron')} 
+                  tax={taxRate}
+                  icon={<Database />}
+                />
+                <MarketCard 
+                  resource="plasma" 
+                  price={gameState.market.plasma.price} 
+                  amount={gameState.resources.plasma} 
+                  onSell={() => sellResource('plasma')} 
+                  tax={taxRate}
+                  icon={<Zap />}
+                />
+                <MarketCard 
+                  resource="crystal" 
+                  price={gameState.market.crystal.price} 
+                  amount={gameState.resources.crystal} 
+                  onSell={() => sellResource('crystal')} 
+                  tax={taxRate}
+                  icon={<Target />}
+                />
+              </div>
+            )}
+
+            {activeTab === 'admin' && currentUser.role === 'admin' && <AdminPanel />}
+          </main>
+        </div>
+
+        {/* Footer */}
+        <footer className="glass p-4 rounded-2xl border-white/5 flex justify-between items-center text-[8px] font-mono text-slate-600 uppercase tracking-widest">
+          <span>© 2024 Nebula Distributed Systems</span>
+          <span>Core Version 3.4.9-LTS</span>
+          <div className="flex gap-4">
+            <Link2 size={10} className="hover:text-indigo-400 cursor-pointer" />
+            <Terminal size={10} className="hover:text-indigo-400 cursor-pointer" />
+          </div>
         </footer>
       </div>
     </div>
   );
 };
 
-// --- Helpers ---
-const UPGRADE_COSTS = {
-  pickaxePower: (l: number) => Math.floor(10 * Math.pow(1.6, l)),
-  autoMiners: (c: number) => Math.floor(50 * Math.pow(1.4, c)),
-  plasmaExtractors: (c: number) => Math.floor(500 * Math.pow(1.5, c)),
-  crystalRefineries: (c: number) => Math.floor(5000 * Math.pow(1.7, c)),
-  researchHubs: (c: number) => Math.floor(200 * Math.pow(1.8, c)),
-  storage: (l: number) => Math.floor(100 * Math.pow(2.2, l))
-};
-
-const TECH_COSTS = {
-  marketAI: (l: number) => Math.floor(50 * Math.pow(2.5, l)),
-  taxOptimization: (l: number) => Math.floor(100 * Math.pow(3, l)),
-  nanoStorage: (l: number) => Math.floor(150 * Math.pow(2.2, l)),
-  neuralMining: (l: number) => Math.floor(80 * Math.pow(2.8, l))
-};
-
-const StatCard = ({ icon, label, val, color, limit }: any) => (
-  <div className="glass p-4 rounded-2xl border-white/5 bg-slate-900/40 flex items-center gap-4">
-    <div className={`p-3 bg-black/40 rounded-xl ${color}`}>{React.cloneElement(icon, { size: 16 })}</div>
-    <div>
-      <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">{label}</span>
-      <p className={`orbitron text-xs font-bold ${color}`}>
-        {Math.floor(val).toLocaleString()}
-        {limit && <span className="text-[8px] text-slate-700 font-normal"> / {limit.toLocaleString()}</span>}
-      </p>
-    </div>
-  </div>
-);
+// --- Sub-Components ---
 
 const NavBtn = ({ active, onClick, icon, label, activeColor }: any) => (
-  <button onClick={onClick} className={`flex items-center gap-2 px-6 py-3 rounded-xl transition-all orbitron text-[9px] font-black whitespace-nowrap ${active ? (activeColor || 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/20') : 'text-slate-500 hover:text-slate-300'}`}>
-    {React.cloneElement(icon, { size: 12 })}
+  <button 
+    onClick={onClick} 
+    className={`flex items-center gap-2.5 px-6 py-3.5 rounded-xl transition-all orbitron text-[9px] font-black whitespace-nowrap ${active ? (activeColor || 'bg-indigo-600 text-white shadow-xl shadow-indigo-900/20 scale-105') : 'text-slate-500 hover:text-slate-300 hover:bg-white/5'}`}
+  >
+    {React.cloneElement(icon, { size: 14 })}
     {label.toUpperCase()}
   </button>
 );
 
-const ShopItem = ({ title, icon, lvl, cost, onBuy, canBuy }: any) => (
-  <div className="glass p-5 rounded-2xl border-white/5 flex flex-col gap-4 group">
-    <div className="flex justify-between items-center">
-      <div className="p-3 bg-slate-950 rounded-xl group-hover:scale-110 transition-transform text-indigo-400">{icon}</div>
-      <span className="orbitron text-[9px] font-black text-indigo-500">LVL {lvl}</span>
+const ResourceBar = ({ label, amount, limit, color, icon }: any) => {
+  const percentage = limit === Infinity ? 0 : Math.min(100, (amount / limit) * 100);
+  return (
+    <div className="space-y-1.5">
+      <div className="flex justify-between text-[10px] items-center">
+        <div className="flex items-center gap-2 text-slate-400 font-bold uppercase tracking-wider">
+          {icon}
+          {label}
+        </div>
+        <span className="font-mono text-white">{Math.floor(amount).toLocaleString()}</span>
+      </div>
+      <div className="h-1 bg-slate-800 rounded-full overflow-hidden flex">
+        <div className={`h-full ${color} transition-all duration-500 shadow-[0_0_8px_rgba(255,255,255,0.1)]`} style={{ width: `${limit === Infinity ? 100 : percentage}%` }} />
+      </div>
     </div>
-    <h4 className="font-bold text-sm tracking-tight">{title}</h4>
-    <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl orbitron text-[9px] font-black transition-all ${canBuy ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/10' : 'bg-slate-800 text-slate-600'}`}>
-      {cost.toLocaleString()} CR
+  );
+};
+
+const StatMini = ({ label, value, sub }: any) => (
+  <div className="glass p-4 rounded-2xl border-white/5 flex flex-col items-center">
+    <span className="text-[7px] font-black text-slate-500 uppercase tracking-[0.2em] mb-1">{label}</span>
+    <span className="orbitron text-sm font-bold text-white">{value}</span>
+    <span className="text-[6px] font-mono text-indigo-500/60 mt-0.5">{sub}</span>
+  </div>
+);
+
+const ShopItem = ({ title, desc, lvl, cost, onBuy, canBuy, icon }: any) => (
+  <div className="glass p-6 rounded-3xl border-white/5 flex flex-col gap-4 group hover:bg-white/[0.02] transition-colors relative overflow-hidden">
+    <div className="absolute top-0 right-0 p-4 text-indigo-500/10 group-hover:text-indigo-500/20 transition-colors">
+      {React.cloneElement(icon, { size: 48 })}
+    </div>
+    <div className="flex justify-between items-start">
+      <div>
+        <h4 className="font-bold text-sm text-white tracking-tight">{title}</h4>
+        <p className="text-[10px] text-slate-500 leading-tight mt-1">{desc}</p>
+      </div>
+      <div className="bg-indigo-500/10 px-3 py-1 rounded-full">
+        <span className="orbitron text-[9px] font-black text-indigo-400">RANK {lvl}</span>
+      </div>
+    </div>
+    <button 
+      onClick={onBuy} 
+      disabled={!canBuy} 
+      className={`w-full py-3.5 rounded-xl orbitron text-[10px] font-black transition-all ${canBuy ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/10 hover:translate-y-[-2px] active:translate-y-0' : 'bg-slate-800 text-slate-600 cursor-not-allowed opacity-50'}`}
+    >
+      UPGRADE: {cost.toLocaleString()} CR
     </button>
   </div>
 );
 
 const TechItem = ({ title, desc, lvl, cost, onBuy, canBuy }: any) => (
-  <div className="glass p-5 rounded-2xl border-indigo-500/10 bg-indigo-500/5 flex flex-col gap-4 group">
-    <div className="flex justify-between items-center">
-      <div className="p-3 bg-slate-950 rounded-xl text-indigo-400"><Microchip size={18} /></div>
-      <span className="orbitron text-[9px] font-black text-indigo-500">TIER {lvl}</span>
+  <div className="glass p-6 rounded-3xl border-yellow-500/10 flex flex-col gap-4 group">
+    <div className="flex justify-between items-start">
+      <div>
+        <h4 className="font-bold text-sm text-yellow-50 shadow-yellow-500/20">{title}</h4>
+        <p className="text-[10px] text-slate-500 leading-tight mt-1">{desc}</p>
+      </div>
+      <span className="orbitron text-[9px] font-black text-yellow-500">LEVEL {lvl}</span>
     </div>
-    <div>
-      <h4 className="font-bold text-sm mb-1">{title}</h4>
-      <p className="text-[10px] text-slate-500 italic font-mono leading-tight">{desc}</p>
-    </div>
-    <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl orbitron text-[9px] font-black transition-all ${canBuy ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/10' : 'bg-slate-800 text-slate-600'}`}>
-      {cost.toLocaleString()} DATA
+    <button 
+      onClick={onBuy} 
+      disabled={!canBuy} 
+      className={`w-full py-3.5 rounded-xl orbitron text-[10px] font-black transition-all ${canBuy ? 'bg-yellow-600 hover:bg-yellow-500 text-black shadow-lg shadow-yellow-600/10' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}
+    >
+      RESEARCH: {cost.toLocaleString()} DATA
     </button>
   </div>
 );
 
-const MarketCard = ({ resource, data, amount, onSell, tax }: any) => (
-  <div className="glass p-6 rounded-3xl border-white/5 flex flex-col gap-6">
+const MarketCard = ({ resource, price, amount, onSell, tax, icon }: any) => (
+  <div className="glass p-6 rounded-3xl border-white/5 flex flex-col gap-6 group hover:border-indigo-500/20 transition-all">
     <div className="flex items-center justify-between">
-      <span className="orbitron font-black text-slate-400 uppercase tracking-widest text-[10px]">{resource}</span>
-      <div className={`flex items-center gap-1 text-[10px] font-bold ${data.trend === 'up' ? 'text-green-500' : 'text-red-500'}`}>
-        {data.price} CR {data.trend === 'up' ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+      <div className="flex items-center gap-3">
+        <div className="p-2 bg-slate-800 rounded-lg text-slate-400 group-hover:text-indigo-400 transition-colors">
+          {React.cloneElement(icon, { size: 16 })}
+        </div>
+        <span className="orbitron font-black text-slate-400 uppercase tracking-widest text-[10px]">{resource}</span>
+      </div>
+      <div className="flex flex-col items-end">
+        <span className="orbitron text-xs text-green-400">{price.toFixed(1)} CR</span>
+        <span className="text-[7px] font-mono text-slate-600">UNIT VALUE</span>
       </div>
     </div>
-    <div className="flex flex-col gap-1">
-      <span className="text-[9px] text-slate-500">CARGO HOLD</span>
-      <p className="orbitron text-xl font-black text-white">{Math.floor(amount).toLocaleString()}</p>
+    
+    <div className="bg-black/20 p-4 rounded-2xl border border-white/5">
+      <p className="text-[8px] font-mono text-slate-500 uppercase mb-1">Held Inventory</p>
+      <p className="orbitron text-2xl font-black text-white">{Math.floor(amount).toLocaleString()}</p>
     </div>
-    <button onClick={onSell} disabled={amount <= 0} className={`w-full py-4 rounded-2xl orbitron text-[10px] font-black transition-all ${amount > 0 ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600'}`}>
-      OFFLOAD (%{(tax*100).toFixed(0)} TAX)
+
+    <button 
+      onClick={onSell} 
+      disabled={amount <= 0} 
+      className={`w-full py-4 rounded-2xl orbitron text-[10px] font-black transition-all ${amount > 0 ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}
+    >
+      OFFLOAD STOCKS (%{(tax*100).toFixed(0)} TAX)
     </button>
   </div>
 );
