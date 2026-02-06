@@ -25,7 +25,8 @@ import {
   Users,
   PlusCircle,
   XCircle,
-  ArrowRightLeft
+  ArrowRightLeft,
+  CloudCheck
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -197,7 +198,6 @@ const DBService = {
     if (error) return [];
     return (data || []).map(u => ({ id: u.id, credits: Number(u.credits || 0) }));
   },
-  // P2P Market Functions
   getListings: async (): Promise<MarketListing[]> => {
     const { data, error } = await supabase
       .from('market_listings')
@@ -213,16 +213,11 @@ const DBService = {
     await supabase.from('market_listings').delete().eq('id', listingId);
   },
   purchaseListing: async (listing: MarketListing, buyerId: string, buyerState: GameState) => {
-    // 1. Fetch seller's latest state
     const seller = await DBService.getUser(listing.seller_id);
     if (!seller) throw new Error("Seller not found");
-
-    // 2. Add credits to seller
     const sellerState = seller.gameState;
     sellerState.credits += listing.price;
     await DBService.updateGameState(listing.seller_id, sellerState);
-
-    // 3. Remove listing
     await DBService.cancelListing(listing.id);
   }
 };
@@ -296,6 +291,7 @@ const App = () => {
   const [gameState, setGameState] = useState<GameState>(INITIAL_GAME_STATE);
   const [activeTab, setActiveTab] = useState<'mine' | 'shop' | 'tech' | 'market' | 'social' | 'trade'>('mine');
   const [isSaving, setIsSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState<string | null>(null);
   const [activeEvent, setActiveEvent] = useState<CosmicEvent | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [marketListings, setMarketListings] = useState<MarketListing[]>([]);
@@ -345,7 +341,6 @@ const App = () => {
       setGameState(prev => {
         const now = Date.now();
         const delta = (now - prev.lastUpdate) / 1000;
-        
         let plasmaMult = 1;
         let researchMult = 1;
         if (activeEvent?.effect === 'plasma_boost') plasmaMult = 2;
@@ -375,22 +370,14 @@ const App = () => {
         (Object.keys(BASE_MARKET_PRICES) as Array<keyof typeof BASE_MARKET_PRICES>).forEach(key => {
           const base = (BASE_MARKET_PRICES as any)[key];
           const current = prev.market[key]?.price || base;
-          
           let eventModifier = 1;
           if (activeEvent?.effect === 'iron_crash' && key === 'iron') eventModifier = 0.4;
-
           const demandFactor = 0.5 + (Math.random() * ((prev.market[key]?.demand || 50) / 50));
           const nextPrice = Math.max(0.5, Math.round(base * demandFactor * (0.8 + Math.random() * 0.4) * eventModifier * 10) / 10);
-          
           let trend: 'up' | 'down' | 'stable' = 'stable';
           if (nextPrice > current) trend = 'up';
           else if (nextPrice < current) trend = 'down';
-          
-          newMarket[key] = { 
-            price: nextPrice, 
-            trend, 
-            demand: Math.max(10, Math.min(100, (prev.market[key]?.demand || 50) + (Math.random() * 20 - 10))) 
-          };
+          newMarket[key] = { price: nextPrice, trend, demand: Math.max(10, Math.min(100, (prev.market[key]?.demand || 50) + (Math.random() * 20 - 10))) };
         });
         return { ...prev, market: newMarket };
       });
@@ -408,14 +395,12 @@ const App = () => {
         let isComplete = false;
         if (m.requirement.type === 'credits') isComplete = prev.credits >= m.requirement.amount;
         else isComplete = prev.resources[m.requirement.type] >= m.requirement.amount;
-
         if (isComplete) {
           changed = true;
           return { ...m, completed: true };
         }
         return m;
       });
-
       if (changed) {
         const reward = newMissions.filter((m, i) => m.completed && !(prev.missions[i]?.completed)).reduce((acc, m) => acc + m.reward, 0);
         return { ...prev, credits: prev.credits + reward, missions: newMissions };
@@ -443,6 +428,7 @@ const App = () => {
         setIsSaving(true);
         await DBService.updateGameState(currentUser.id, gameState);
         setIsSaving(false);
+        setLastSaved(new Date().toLocaleTimeString());
       }, 5000);
       return () => clearTimeout(saveTimeout);
     }
@@ -465,11 +451,9 @@ const App = () => {
   const mineManual = (e: React.MouseEvent) => {
     if (gameState.resources.iron < currentStorageLimit) {
       const power = gameState.upgrades.pickaxePower + (gameState.technologies.neuralMining * 2);
-      
       const newText = { id: Date.now(), text: `+${power} Demir`, x: e.clientX, y: e.clientY };
       setFloatingTexts(prev => [...prev, newText]);
       setTimeout(() => setFloatingTexts(prev => prev.filter(t => t.id !== newText.id)), 1000);
-
       setGameState(prev => ({
         ...prev,
         resources: { ...prev.resources, iron: Math.min(currentStorageLimit, prev.resources.iron + power) }
@@ -514,43 +498,28 @@ const App = () => {
     e.preventDefault();
     const { resource, amount, price } = p2pForm;
     if (gameState.resources[resource] < amount || amount <= 0 || price <= 0) return;
-
-    // Escrow logic: deduct resources now
     setGameState(prev => ({
       ...prev,
       resources: { ...prev.resources, [resource]: prev.resources[resource] - amount }
     }));
-
-    await DBService.postListing({
-      seller_id: currentUser.id,
-      resource_type: resource,
-      amount,
-      price
-    });
-
+    await DBService.postListing({ seller_id: currentUser.id, resource_type: resource, amount, price });
     syncGlobalData();
     setP2pForm(prev => ({ ...prev, amount: 0, price: 0 }));
   };
 
   const handleBuyListing = async (listing: MarketListing) => {
     if (gameState.credits < listing.price) return;
-    
-    // Check storage
     if (gameState.resources[listing.resource_type] + listing.amount > currentStorageLimit) {
       alert("Storage full! Upgrade cargo space.");
       return;
     }
-
     try {
       await DBService.purchaseListing(listing, currentUser.id, gameState);
-      
-      // Update buyer local state
       setGameState(prev => ({
         ...prev,
         credits: prev.credits - listing.price,
         resources: { ...prev.resources, [listing.resource_type]: prev.resources[listing.resource_type] + listing.amount }
       }));
-
       syncGlobalData();
     } catch (err) {
       alert("Trade failed: " + err);
@@ -559,13 +528,10 @@ const App = () => {
 
   const handleCancelListing = async (listing: MarketListing) => {
     await DBService.cancelListing(listing.id);
-    
-    // Refund resources
     setGameState(prev => ({
       ...prev,
       resources: { ...prev.resources, [listing.resource_type]: prev.resources[listing.resource_type] + listing.amount }
     }));
-
     syncGlobalData();
   };
 
@@ -585,10 +551,13 @@ const App = () => {
             </div>
             <div>
               <h1 className="orbitron text-2xl font-black tracking-tight text-white uppercase italic">Nebula <span className="text-cyan-400">Trading Hub</span></h1>
-              <p className="text-[10px] font-mono text-slate-500 tracking-[0.2em] flex items-center gap-2">
-                <span className={`w-2 h-2 ${isSaving ? 'bg-yellow-500 animate-pulse' : 'bg-green-500'} rounded-full`} /> 
-                {isSaving ? 'SYNCING...' : 'CLOUD SYNCED'} | PILOT: {currentUser.id}
-              </p>
+              <div className="text-[10px] font-mono text-slate-500 tracking-[0.2em] flex flex-col gap-1 mt-1">
+                <p className="flex items-center gap-2">
+                  <span className={`w-2 h-2 ${isSaving ? 'bg-yellow-500 animate-pulse' : 'bg-green-500'} rounded-full`} /> 
+                  {isSaving ? 'DATABASE SYNCING...' : 'DATABASE PERSISTENT'} | PILOT: {currentUser.id}
+                </p>
+                {lastSaved && <p className="text-[8px] text-slate-600">LAST SAVED TO CLOUD: {lastSaved}</p>}
+              </div>
             </div>
           </div>
 
@@ -626,7 +595,7 @@ const App = () => {
                 </div>
               </div>
             ))}
-            <span className="text-slate-600 ml-10">| P2P TRADING ACTIVE | COSMIC STATUS: {activeEvent ? 'UNSTABLE' : 'NORMAL'} | PILOT CONNECTED |</span>
+            <span className="text-slate-600 ml-10">| CLOUD STORAGE ACTIVE | PERSISTENT WORLD ENABLED | PILOT CONNECTED |</span>
           </div>
         </section>
 
@@ -647,12 +616,7 @@ const App = () => {
                       <p className="text-[8px] text-slate-500 font-mono">{m.description}</p>
                       {!m.completed && (
                         <div className="mt-2 h-1 bg-slate-800 rounded-full overflow-hidden">
-                          <div 
-                            className="h-full bg-yellow-500" 
-                            style={{ 
-                              width: `${Math.min(100, (m.requirement.type === 'credits' ? gameState.credits : (gameState.resources as any)[m.requirement.type]) / m.requirement.amount * 100)}%` 
-                            }} 
-                          />
+                          <div className="h-full bg-yellow-500" style={{ width: `${Math.min(100, (m.requirement.type === 'credits' ? gameState.credits : (gameState.resources as any)[m.requirement.type]) / m.requirement.amount * 100)}%` }} />
                         </div>
                       )}
                     </div>
@@ -717,11 +681,7 @@ const App = () => {
                     <form onSubmit={handlePostTrade} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
                       <div className="flex flex-col gap-2">
                         <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest">RESOURCE</label>
-                        <select 
-                          value={p2pForm.resource} 
-                          onChange={e => setP2pForm(p => ({...p, resource: e.target.value as any}))}
-                          className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm"
-                        >
+                        <select value={p2pForm.resource} onChange={e => setP2pForm(p => ({...p, resource: e.target.value as any}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm">
                           <option value="iron">Iron</option>
                           <option value="plasma">Plasma</option>
                           <option value="crystal">Crystal</option>
@@ -729,27 +689,13 @@ const App = () => {
                       </div>
                       <div className="flex flex-col gap-2">
                         <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest">AMOUNT</label>
-                        <input 
-                          type="number" 
-                          placeholder="Amount" 
-                          value={p2pForm.amount || ''} 
-                          onChange={e => setP2pForm(p => ({...p, amount: Number(e.target.value)}))}
-                          className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm"
-                        />
+                        <input type="number" placeholder="Amount" value={p2pForm.amount || ''} onChange={e => setP2pForm(p => ({...p, amount: Number(e.target.value)}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm" />
                       </div>
                       <div className="flex flex-col gap-2">
                         <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest">TOTAL PRICE (CR)</label>
-                        <input 
-                          type="number" 
-                          placeholder="Price" 
-                          value={p2pForm.price || ''} 
-                          onChange={e => setP2pForm(p => ({...p, price: Number(e.target.value)}))}
-                          className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm"
-                        />
+                        <input type="number" placeholder="Price" value={p2pForm.price || ''} onChange={e => setP2pForm(p => ({...p, price: Number(e.target.value)}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm" />
                       </div>
-                      <button className="bg-cyan-600 hover:bg-cyan-500 text-white font-black orbitron text-[11px] h-[46px] rounded-xl shadow-lg transition-all active:scale-95">
-                        LIST OFFER
-                      </button>
+                      <button className="bg-cyan-600 hover:bg-cyan-500 text-white font-black orbitron text-[11px] h-[46px] rounded-xl shadow-lg transition-all active:scale-95">LIST OFFER</button>
                     </form>
                   </div>
 
@@ -772,11 +718,8 @@ const App = () => {
                                 <span className="text-[8px] font-mono text-slate-500">Pilot: {listing.seller_id}</span>
                               </div>
                             </div>
-                            <span className="text-[10px] font-mono text-slate-600">
-                              {new Date(listing.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
+                            <span className="text-[10px] font-mono text-slate-600">{new Date(listing.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                           </div>
-                          
                           <div className="flex justify-between items-end">
                             <div>
                               <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-1">OFFER</span>
@@ -787,16 +730,11 @@ const App = () => {
                               <span className="orbitron text-lg font-bold text-yellow-500">{listing.price.toLocaleString()} <span className="text-[10px]">CR</span></span>
                             </div>
                           </div>
-
                           <div className="mt-4 pt-4 border-t border-white/5">
                             {listing.seller_id === currentUser.id ? (
-                              <button onClick={() => handleCancelListing(listing)} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2">
-                                <XCircle size={14} /> CANCEL LISTING
-                              </button>
+                              <button onClick={() => handleCancelListing(listing)} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2"><XCircle size={14} /> CANCEL LISTING</button>
                             ) : (
-                              <button onClick={() => handleBuyListing(listing)} disabled={gameState.credits < listing.price} className={`w-full py-3 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2 transition-all ${gameState.credits >= listing.price ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
-                                <ShoppingBag size={14} /> ACCEPT OFFER
-                              </button>
+                              <button onClick={() => handleBuyListing(listing)} disabled={gameState.credits < listing.price} className={`w-full py-3 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2 transition-all ${gameState.credits >= listing.price ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}><ShoppingBag size={14} /> ACCEPT OFFER</button>
                             )}
                           </div>
                         </div>
