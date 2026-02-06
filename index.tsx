@@ -5,32 +5,31 @@ import {
   Pickaxe, 
   TrendingUp, 
   TrendingDown,
-  Settings, 
   Zap, 
   ShoppingBag, 
   Cpu, 
   Database, 
   Rocket,
-  LogOut,
+  LogOut, 
   Binary,
   BarChart3,
   Microchip,
   Globe,
-  ArrowUpRight,
   Target,
   ShieldCheck,
   Edit3,
-  Save,
-  Trash2,
   X,
   RefreshCw,
   Terminal,
   Code2,
   Cloud,
-  Link2
+  Link2,
+  AlertTriangle,
+  // Added missing Trash2 icon
+  Trash2
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js';
 
 // --- Types ---
 interface ResourceState {
@@ -107,79 +106,63 @@ const INITIAL_GAME_STATE: GameState = {
   lastUpdate: Date.now()
 };
 
-// --- Supabase Client Initialization ---
-// NOTE: Gerçek projede bu değerler process.env'den gelmelidir.
+// --- Supabase Configuration ---
+// Note: ENV variables must be configured in your development environment
 const SUPABASE_URL = (process.env as any).SUPABASE_URL || 'https://your-project.supabase.co';
 const SUPABASE_ANON_KEY = (process.env as any).SUPABASE_ANON_KEY || 'your-anon-key';
 
-// Eğer anahtarlar yoksa bile hata vermemesi için mock logic fallback
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const NebulaAPI = {
+  // Fetch all users from Supabase
   getUsers: async (): Promise<Record<string, UserData>> => {
-    try {
-      const { data, error } = await supabase.from('users').select('*');
-      if (error) throw error;
-      const record: Record<string, UserData> = {};
-      data.forEach(u => {
-        record[u.id] = {
-          id: u.id,
-          password: u.password,
-          role: u.role,
-          gameState: u.game_state
-        };
-      });
-      return record;
-    } catch (e) {
-      console.error("Supabase connection failed, falling back to local simulation.", e);
-      const local = localStorage.getItem('nebula_db_v3');
-      return local ? JSON.parse(local) : {};
+    const { data, error } = await supabase.from('users').select('*');
+    if (error) {
+      console.error("Supabase Connection Error:", error);
+      throw new Error("Could not connect to Nebula Database (Supabase).");
     }
+    const record: Record<string, UserData> = {};
+    data?.forEach(u => {
+      record[u.id] = {
+        id: u.id,
+        password: u.password,
+        role: u.role,
+        gameState: u.game_state
+      };
+    });
+    return record;
   },
 
+  // Save or update user
   saveUser: async (user: UserData) => {
-    try {
-      const { error } = await supabase.from('users').upsert({
-        id: user.id,
-        password: user.password,
-        role: user.role,
-        game_state: user.gameState
-      });
-      if (error) throw error;
-      return { status: 'success', provider: 'supabase' };
-    } catch (e) {
-      const users = JSON.parse(localStorage.getItem('nebula_db_v3') || '{}');
-      users[user.id] = user;
-      localStorage.setItem('nebula_db_v3', JSON.stringify(users));
-      return { status: 'local_fallback', provider: 'localStorage' };
-    }
+    const { error } = await supabase.from('users').upsert({
+      id: user.id,
+      password: user.password,
+      role: user.role,
+      game_state: user.gameState
+    });
+    if (error) throw error;
+    return { status: 'success' };
   },
 
+  // Partial update for game state performance
   updateGameState: async (userId: string, state: GameState) => {
-    try {
-      await supabase.from('users').update({ game_state: state }).eq('id', userId);
-    } catch (e) {
-      const users = JSON.parse(localStorage.getItem('nebula_db_v3') || '{}');
-      if (users[userId]) {
-        users[userId].gameState = state;
-        localStorage.setItem('nebula_db_v3', JSON.stringify(users));
-      }
-    }
+    const { error } = await supabase
+      .from('users')
+      .update({ game_state: state })
+      .eq('id', userId);
+    if (error) console.error("Sync failure:", error);
   },
 
+  // Admin: Delete user
   adminDeleteUser: async (userId: string) => {
-    try {
-      await supabase.from('users').delete().eq('id', userId);
-    } catch (e) {
-      const users = JSON.parse(localStorage.getItem('nebula_db_v3') || '{}');
-      delete users[userId];
-      localStorage.setItem('nebula_db_v3', JSON.stringify(users));
-    }
+    const { error } = await supabase.from('users').delete().eq('id', userId);
+    if (error) throw error;
   }
 };
 
 const SQL_SCHEMA = `
--- 1. Create the Users Table in Supabase SQL Editor
+-- Run this in Supabase SQL Editor:
 CREATE TABLE public.users (
     id TEXT PRIMARY KEY,
     password TEXT NOT NULL,
@@ -188,11 +171,9 @@ CREATE TABLE public.users (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. Enable Row Level Security (RLS)
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 
--- 3. Create Basic Access Policy
-CREATE POLICY "Public full access" ON public.users 
+CREATE POLICY "Allow all operations" ON public.users 
 FOR ALL USING (true) WITH CHECK (true);
 `;
 
@@ -206,9 +187,14 @@ const AdminPanel = () => {
 
   const refreshUsers = useCallback(async () => {
     setLoading(true);
-    const data = await NebulaAPI.getUsers();
-    setUsers(data);
-    setLoading(false);
+    try {
+      const data = await NebulaAPI.getUsers();
+      setUsers(data);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -223,35 +209,47 @@ const AdminPanel = () => {
   const handleSave = async () => {
     if (editForm) {
       setLoading(true);
-      await NebulaAPI.saveUser(editForm);
-      setEditingId(null);
-      setEditForm(null);
-      await refreshUsers();
+      try {
+        await NebulaAPI.saveUser(editForm);
+        setEditingId(null);
+        setEditForm(null);
+        await refreshUsers();
+      } catch (e) {
+        alert("Save failed");
+      } finally {
+        setLoading(false);
+      }
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (confirm(`Delete ${id}?`)) {
+    if (confirm(`Terminate access for ${id}?`)) {
       setLoading(true);
-      await NebulaAPI.adminDeleteUser(id);
-      await refreshUsers();
+      try {
+        await NebulaAPI.adminDeleteUser(id);
+        await refreshUsers();
+      } catch (e) {
+        alert("Delete failed");
+      } finally {
+        setLoading(false);
+      }
     }
   };
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-top-4 duration-500">
-      <div className="flex flex-col md:flex-row gap-4 items-stretch md:items-center justify-between bg-red-950/20 border border-red-500/20 p-6 rounded-3xl">
+      <div className="flex flex-col md:flex-row gap-4 items-stretch md:items-center justify-between bg-indigo-950/20 border border-indigo-500/20 p-6 rounded-3xl">
         <div className="flex items-center gap-4">
-          <div className="p-3 bg-red-500/20 rounded-xl text-red-400"><ShieldCheck size={24} /></div>
+          <div className="p-3 bg-indigo-500/20 rounded-xl text-indigo-400"><ShieldCheck size={24} /></div>
           <div>
-            <h2 className="orbitron text-lg font-black text-red-400 uppercase tracking-tighter">Supabase Commander</h2>
-            <p className="text-[10px] font-mono text-red-500/60 uppercase">PostgreSQL Tier: Cloud Integration Active</p>
+            <h2 className="orbitron text-lg font-black text-indigo-400 uppercase tracking-tighter">Galaxy Control</h2>
+            <p className="text-[10px] font-mono text-indigo-500/60 uppercase">Cloud Persistence: SUPABASE_REALTIME</p>
           </div>
         </div>
         
         <div className="flex bg-black/40 p-1 rounded-xl border border-white/5">
-          <button onClick={() => setAdminSubTab('users')} className={`px-4 py-2 rounded-lg text-[10px] orbitron font-bold transition-all ${adminSubTab === 'users' ? 'bg-red-500 text-white' : 'text-slate-500 hover:text-slate-300'}`}>PILOT NODES</button>
-          <button onClick={() => setAdminSubTab('database')} className={`px-4 py-2 rounded-lg text-[10px] orbitron font-bold transition-all ${adminSubTab === 'database' ? 'bg-red-500 text-white' : 'text-slate-500 hover:text-slate-300'}`}>SUPABASE SETUP</button>
+          <button onClick={() => setAdminSubTab('users')} className={`px-4 py-2 rounded-lg text-[10px] orbitron font-bold transition-all ${adminSubTab === 'users' ? 'bg-indigo-500 text-white' : 'text-slate-500 hover:text-slate-300'}`}>USER NODES</button>
+          <button onClick={() => setAdminSubTab('database')} className={`px-4 py-2 rounded-lg text-[10px] orbitron font-bold transition-all ${adminSubTab === 'database' ? 'bg-indigo-500 text-white' : 'text-slate-500 hover:text-slate-300'}`}>SUPABASE SETUP</button>
         </div>
       </div>
 
@@ -260,10 +258,10 @@ const AdminPanel = () => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-900/50 border-b border-white/5 text-[10px] uppercase font-black tracking-widest text-slate-500">
-                <th className="px-6 py-4">Pilot ID</th>
+                <th className="px-6 py-4">Pilot</th>
                 <th className="px-6 py-4">Credits</th>
                 <th className="px-6 py-4">Role</th>
-                <th className="px-6 py-4 text-right">Actions</th>
+                <th className="px-6 py-4 text-right">Ops</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
@@ -272,14 +270,14 @@ const AdminPanel = () => {
                   <td className="px-6 py-4">
                     <div className="flex flex-col">
                       <span className="text-sm font-bold text-slate-200">{u.id}</span>
-                      <span className="text-[9px] font-mono text-slate-500 uppercase tracking-tighter">Auth Layer: PostgreSQL</span>
+                      <span className="text-[9px] font-mono text-slate-500">Node Active</span>
                     </div>
                   </td>
                   <td className="px-6 py-4 orbitron text-xs font-bold text-yellow-400">
                     {Math.floor(u.gameState.credits).toLocaleString()} CR
                   </td>
                   <td className="px-6 py-4">
-                    <span className={`text-[9px] px-2 py-1 rounded-full font-black uppercase ${u.role === 'admin' ? 'bg-red-500/20 text-red-400' : 'bg-blue-500/20 text-blue-400'}`}>
+                    <span className={`text-[9px] px-2 py-1 rounded-full font-black uppercase ${u.role === 'admin' ? 'bg-red-500/20 text-red-400 border border-red-500/20' : 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/20'}`}>
                       {u.role}
                     </span>
                   </td>
@@ -293,38 +291,34 @@ const AdminPanel = () => {
               ))}
             </tbody>
           </table>
-          {loading && <div className="p-10 text-center animate-pulse orbitron text-xs text-red-500">FETCHING FROM SUPABASE INSTANCE...</div>}
+          {loading && <div className="p-10 text-center animate-pulse orbitron text-xs text-indigo-500 uppercase">Syncing with remote database...</div>}
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="glass p-6 rounded-3xl border-white/5">
-            <h3 className="orbitron text-xs font-black text-slate-400 mb-4 flex items-center gap-2"><Code2 size={14} /> SUPABASE SQL MIGRATION</h3>
-            <pre className="bg-black/60 p-4 rounded-xl text-[10px] font-mono text-cyan-400 border border-cyan-500/10 overflow-x-auto max-h-[300px]">
+            <h3 className="orbitron text-xs font-black text-slate-400 mb-4 flex items-center gap-2"><Code2 size={14} /> SUPABASE MIGRATION SQL</h3>
+            <pre className="bg-black/60 p-4 rounded-xl text-[10px] font-mono text-indigo-400 border border-indigo-500/10 overflow-x-auto max-h-[300px]">
               {SQL_SCHEMA}
             </pre>
             <div className="mt-4 flex gap-4">
-              <button onClick={() => navigator.clipboard.writeText(SQL_SCHEMA)} className="text-[10px] font-mono text-cyan-600 hover:text-cyan-400 transition-all flex items-center gap-2">
+              <button onClick={() => navigator.clipboard.writeText(SQL_SCHEMA)} className="text-[10px] font-mono text-indigo-600 hover:text-indigo-400 transition-all flex items-center gap-2">
                 <RefreshCw size={12} /> COPY SQL
               </button>
               <a href="https://supabase.com/dashboard" target="_blank" className="text-[10px] font-mono text-slate-500 hover:text-white transition-all flex items-center gap-2">
-                <Link2 size={12} /> OPEN DASHBOARD
+                <Link2 size={12} /> OPEN SUPABASE
               </a>
             </div>
           </div>
           <div className="glass p-6 rounded-3xl border-white/5 space-y-4">
-            <h3 className="orbitron text-xs font-black text-slate-400 mb-4 flex items-center gap-2"><Terminal size={14} /> CLOUD CONFIGURATION</h3>
+            <h3 className="orbitron text-xs font-black text-slate-400 mb-4 flex items-center gap-2"><Terminal size={14} /> CLOUD STATUS</h3>
             <div className="space-y-4">
               <div className="bg-black/40 p-4 rounded-xl border border-white/5">
-                 <span className="text-[9px] text-slate-500 block uppercase mb-1">Project URL</span>
-                 <code className="text-[10px] text-cyan-500 break-all">{SUPABASE_URL}</code>
+                 <span className="text-[9px] text-slate-500 block uppercase mb-1">Target Instance</span>
+                 <code className="text-[10px] text-indigo-500 break-all">{SUPABASE_URL}</code>
               </div>
-              <div className="bg-black/40 p-4 rounded-xl border border-white/5">
-                 <span className="text-[9px] text-slate-500 block uppercase mb-1">Auth Strategy</span>
-                 <span className="orbitron text-[11px] font-bold text-green-500">POSTGRES_JWT_ENABLED</span>
-              </div>
-              <div className="p-4 bg-blue-500/5 border border-blue-500/10 rounded-xl">
-                 <p className="text-[10px] text-blue-400 font-mono leading-relaxed">
-                   Uygulama Supabase istemcisini kullanarak JSONB formatında yüksek hızlı senkronizasyon sağlar.
+              <div className="p-4 bg-indigo-500/5 border border-indigo-500/10 rounded-xl">
+                 <p className="text-[10px] text-indigo-400 font-mono leading-relaxed">
+                   Tüm oyun verileri Supabase'deki 'users' tablosunda JSONB sütununda atomik olarak saklanır. localstorage bu versiyonda tamamen devre dışıdır.
                  </p>
               </div>
             </div>
@@ -333,10 +327,10 @@ const AdminPanel = () => {
       )}
 
       {editingId && editForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
           <div className="max-w-2xl w-full glass border-white/10 rounded-[2rem] p-8 shadow-2xl relative overflow-y-auto max-h-[90vh]">
             <button onClick={() => setEditingId(null)} className="absolute top-6 right-6 text-slate-500 hover:text-white"><X /></button>
-            <h3 className="orbitron text-xl font-black text-white mb-8">EDIT NODE: {editForm.id}</h3>
+            <h3 className="orbitron text-xl font-black text-white mb-8 italic">OVERRIDE PILOT: {editForm.id}</h3>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <label className="block">
@@ -344,7 +338,7 @@ const AdminPanel = () => {
                   <input type="number" value={editForm.gameState.credits} onChange={e => setEditForm({...editForm, gameState: {...editForm.gameState, credits: Number(e.target.value)}})} className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-3 text-sm text-yellow-400 outline-none" />
                 </label>
                 <label className="block">
-                  <span className="text-[10px] font-black text-slate-500 uppercase">Access Role</span>
+                  <span className="text-[10px] font-black text-slate-500 uppercase">Role</span>
                   <select value={editForm.role} onChange={e => setEditForm({...editForm, role: e.target.value as 'user' | 'admin'})} className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-3 text-sm text-white outline-none">
                     <option value="user">USER</option>
                     <option value="admin">ADMIN</option>
@@ -352,9 +346,9 @@ const AdminPanel = () => {
                 </label>
             </div>
 
-            <button onClick={handleSave} disabled={loading} className="w-full mt-10 bg-cyan-600 hover:bg-cyan-500 py-4 rounded-2xl font-black orbitron text-white text-sm transition-all disabled:opacity-50 flex items-center justify-center gap-3">
+            <button onClick={handleSave} disabled={loading} className="w-full mt-10 bg-indigo-600 hover:bg-indigo-500 py-4 rounded-2xl font-black orbitron text-white text-sm transition-all disabled:opacity-50 flex items-center justify-center gap-3">
               {loading && <RefreshCw size={16} className="animate-spin" />}
-              {loading ? 'SYNCING SUPABASE...' : 'COMMIT CHANGES TO CLOUD'}
+              {loading ? 'COMMITTING...' : 'UPDATE REMOTE DATABASE'}
             </button>
           </div>
         </div>
@@ -374,40 +368,76 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const users = await NebulaAPI.getUsers();
+    setError('');
     
-    if (isRegister) {
-      if (users[userId]) { setError('Pilot ID already active in DB.'); setLoading(false); return; }
-      const role = Object.keys(users).length === 0 ? 'admin' : 'user';
-      const newUser: UserData = { id: userId, password, role, gameState: INITIAL_GAME_STATE };
-      await NebulaAPI.saveUser(newUser);
-      onLogin(newUser);
-    } else {
-      const u = users[userId];
-      if (u && u.password === password) onLogin(u);
-      else setError('Supabase Auth: Access Denied.');
+    try {
+      const users = await NebulaAPI.getUsers();
+      
+      // Special Logic for admin:admin
+      if (userId === 'admin' && password === 'admin' && !users['admin']) {
+        const adminUser: UserData = { id: 'admin', password: 'admin', role: 'admin', gameState: INITIAL_GAME_STATE };
+        await NebulaAPI.saveUser(adminUser);
+        onLogin(adminUser);
+        setLoading(false);
+        return;
+      }
+
+      if (isRegister) {
+        if (users[userId]) {
+          setError('Pilot ID already registered in database.');
+        } else {
+          const newUser: UserData = { 
+            id: userId, 
+            password, 
+            role: 'user', 
+            gameState: INITIAL_GAME_STATE 
+          };
+          await NebulaAPI.saveUser(newUser);
+          onLogin(newUser);
+        }
+      } else {
+        const u = users[userId];
+        if (u && u.password === password) {
+          onLogin(u);
+        } else {
+          setError('Access Denied: Invalid Pilot ID or Password.');
+        }
+      }
+    } catch (e) {
+      setError('Connection Failure: Supabase database is unreachable.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-black p-4">
-      <div className="max-w-md w-full glass rounded-[2rem] p-10 border border-cyan-500/20 shadow-[0_0_100px_rgba(6,182,212,0.1)]">
+    <div className="min-h-screen flex items-center justify-center bg-black p-4 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-900/10 via-black to-black">
+      <div className="max-w-md w-full glass rounded-[2rem] p-10 border border-indigo-500/20 shadow-[0_0_100px_rgba(79,70,229,0.1)]">
         <div className="text-center mb-8">
-          <Globe className="text-cyan-400 w-16 h-16 mx-auto mb-6 animate-pulse" />
-          <h1 className="orbitron text-2xl font-black text-white uppercase">Nebula Supabase</h1>
-          <p className="text-slate-500 text-[10px] font-mono mt-1">ENGINE: SUPABASE_JS_POSTGRES</p>
+          <Globe className="text-indigo-400 w-16 h-16 mx-auto mb-6 animate-pulse" />
+          <h1 className="orbitron text-2xl font-black text-white uppercase italic tracking-tighter">Nebula <span className="text-indigo-500">Cloud</span></h1>
+          <p className="text-slate-500 text-[9px] font-mono mt-2 uppercase tracking-widest">PostgreSQL JSONB persistence active</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
-          <input required type="text" placeholder="Pilot ID" value={userId} onChange={e => setUserId(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none transition-all font-mono" />
-          <input required type="password" placeholder="Access Code" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none transition-all font-mono" />
-          {error && <p className="text-red-500 text-[10px] text-center font-bold font-mono">{error}</p>}
-          <button disabled={loading} className="w-full bg-cyan-600 hover:bg-cyan-500 py-4 rounded-xl font-black orbitron text-white transition-all disabled:opacity-50 flex items-center justify-center gap-2">
-            {loading ? <RefreshCw size={16} className="animate-spin" /> : (isRegister ? 'INITIALIZE CLOUD NODE' : 'SYNC WITH SUPABASE')}
+          <div className="space-y-1">
+            <span className="text-[9px] font-black text-indigo-500/60 uppercase ml-2">Pilot Identification</span>
+            <input required type="text" placeholder="Pilot ID" value={userId} onChange={e => setUserId(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3 text-indigo-50 focus:border-indigo-500 outline-none transition-all font-mono text-sm" />
+          </div>
+          <div className="space-y-1">
+            <span className="text-[9px] font-black text-indigo-500/60 uppercase ml-2">Access Key</span>
+            <input required type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3 text-indigo-50 focus:border-indigo-500 outline-none transition-all font-mono text-sm" />
+          </div>
+          {error && (
+            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-center gap-2 text-red-400 text-[10px] font-mono">
+              <AlertTriangle size={14} /> {error}
+            </div>
+          )}
+          <button disabled={loading} className="w-full bg-indigo-600 hover:bg-indigo-500 py-4 rounded-xl font-black orbitron text-white transition-all disabled:opacity-50 flex items-center justify-center gap-2 mt-4 shadow-lg shadow-indigo-600/20">
+            {loading ? <RefreshCw size={16} className="animate-spin" /> : (isRegister ? 'REGISTER PILOT' : 'ESTABLISH LINK')}
           </button>
         </form>
-        <button onClick={() => setIsRegister(!isRegister)} className="w-full mt-6 text-slate-500 text-xs hover:text-cyan-400 font-mono">
-          {isRegister ? '> Back to Terminal' : '> Provision New Cloud Account'}
+        <button onClick={() => setIsRegister(!isRegister)} className="w-full mt-6 text-slate-500 text-[10px] hover:text-indigo-400 font-mono uppercase tracking-widest transition-colors">
+          {isRegister ? '> Back to Login' : '> Register new Cloud Node'}
         </button>
       </div>
     </div>
@@ -419,17 +449,17 @@ const App = () => {
   const [currentUser, setCurrentUser] = useState<UserData | null>(null);
   const [gameState, setGameState] = useState<GameState>(INITIAL_GAME_STATE);
   const [activeTab, setActiveTab] = useState<'mine' | 'shop' | 'tech' | 'market' | 'admin'>('mine');
-  const [aiAdvice, setAiAdvice] = useState<string>("Analyzing galactic economy...");
+  const [aiAdvice, setAiAdvice] = useState<string>("Analyzing market trends...");
   const [syncing, setSyncing] = useState(false);
 
-  // Debounced Sync with Supabase
+  // Debounced Remote Sync
   useEffect(() => {
     if (currentUser) {
       const syncTimeout = setTimeout(async () => {
         setSyncing(true);
         await NebulaAPI.updateGameState(currentUser.id, gameState);
         setSyncing(false);
-      }, 3000); // 3 saniye debounce
+      }, 3000); 
       return () => clearTimeout(syncTimeout);
     }
   }, [gameState, currentUser]);
@@ -444,7 +474,7 @@ const App = () => {
     [gameState.upgrades.storageLevel, gameState.technologies.nanoStorage]
   );
 
-  // Game Production Loop
+  // Auto-Production Loop
   useEffect(() => {
     if (!currentUser) return;
     const interval = setInterval(() => {
@@ -473,8 +503,8 @@ const App = () => {
     const marketInterval = setInterval(() => {
       setGameState(prev => {
         const newMarket = { ...prev.market };
-        Object.keys(BASE_MARKET_PRICES).forEach(key => {
-          const base = (BASE_MARKET_PRICES as any)[key];
+        (Object.keys(BASE_MARKET_PRICES) as Array<keyof typeof BASE_MARKET_PRICES>).forEach(key => {
+          const base = BASE_MARKET_PRICES[key];
           const demandFactor = 0.5 + (Math.random() * (prev.market[key].demand / 50));
           const nextPrice = Math.max(1, Math.round(base * demandFactor * (0.8 + Math.random() * 0.4) * 10) / 10);
           newMarket[key] = { 
@@ -491,7 +521,6 @@ const App = () => {
 
   if (!currentUser) return <AuthScreen onLogin={u => { setCurrentUser(u); setGameState(u.gameState); }} />;
 
-  // Handlers
   const mineManual = () => {
     if (gameState.resources.iron < currentStorageLimit) {
       setGameState(prev => ({
@@ -537,61 +566,60 @@ const App = () => {
   const getAiAdvice = async () => {
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `Supabase kullanan bir tycoon oyununun AI danışmanısın. Vergi: %${(taxRate*100).toFixed(0)}, Kredi: ${gameState.credits.toFixed(0)}. Bir borsa taktiği ver.`;
+      const prompt = `Supabase kullanan Nebula Miner oyununda danışmansın. Vergi: %${(taxRate*100).toFixed(0)}, Kredi: ${gameState.credits.toFixed(0)}. Bir borsa tavsiyesi ver.`;
       const res = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
-      setAiAdvice(res.text || "Cloud uplink busy.");
-    } catch { setAiAdvice("Offline mode active."); }
+      setAiAdvice(res.text || "Connection lost...");
+    } catch { setAiAdvice("Uplink unavailable."); }
   };
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 p-4 md:p-8 font-sans">
       <div className="max-w-7xl mx-auto flex flex-col gap-6">
         
-        <header className="glass rounded-3xl p-6 flex flex-col md:flex-row justify-between items-center gap-4 border-white/5 shadow-2xl">
+        <header className="glass rounded-3xl p-6 flex flex-col md:flex-row justify-between items-center gap-4 border-indigo-500/10 shadow-2xl">
           <div className="flex items-center gap-6">
-            <div className="p-4 bg-gradient-to-br from-indigo-600 to-blue-700 rounded-2xl">
+            <div className="p-4 bg-gradient-to-br from-indigo-600 to-indigo-800 rounded-2xl shadow-lg shadow-indigo-500/20">
               <Cloud className="w-8 h-8 text-white" />
             </div>
             <div>
-              <h1 className="orbitron text-2xl font-black text-white italic">Nebula <span className="text-indigo-400">Cloud</span></h1>
+              <h1 className="orbitron text-2xl font-black text-white italic tracking-tighter">Nebula <span className="text-indigo-400">Cloud</span></h1>
               <div className="flex items-center gap-3 mt-1">
                  <span className="text-[9px] font-mono text-slate-500 tracking-[0.2em] flex items-center gap-2">
-                   <span className="w-2 h-2 bg-green-500 rounded-full" /> SUPABASE: ONLINE
+                   <span className="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_8px_rgba(34,197,94,0.6)]" /> SUPABASE LINK: STABLE
                  </span>
-                 {syncing && <span className="text-[9px] font-mono text-indigo-500 animate-pulse flex items-center gap-1"><RefreshCw size={10} className="animate-spin" /> SYNCING...</span>}
+                 {syncing && <span className="text-[9px] font-mono text-indigo-400 animate-pulse flex items-center gap-1"><RefreshCw size={10} className="animate-spin" /> REMOTE_SYNC...</span>}
               </div>
             </div>
           </div>
           <div className="flex items-center gap-3">
             <div className="bg-slate-900/80 px-6 py-3 rounded-2xl border border-indigo-500/20 shadow-inner flex flex-col items-end">
-              <span className="text-[9px] font-black text-indigo-400 uppercase">Balance</span>
+              <span className="text-[8px] font-black text-indigo-500 uppercase tracking-widest">Global Credits</span>
               <span className="orbitron text-lg font-bold text-white">{Math.floor(gameState.credits).toLocaleString()} CR</span>
             </div>
-            <button onClick={() => setCurrentUser(null)} className="p-4 hover:bg-red-500/10 rounded-2xl text-slate-600 hover:text-red-400 transition-all"><LogOut size={20} /></button>
+            <button onClick={() => window.location.reload()} className="p-4 hover:bg-red-500/10 rounded-2xl text-slate-600 hover:text-red-400 transition-all"><LogOut size={20} /></button>
           </div>
         </header>
 
-        <section className="bg-indigo-950/20 border-y border-indigo-500/10 p-4 overflow-hidden relative font-mono text-xs">
-           <div className="flex items-center gap-8 animate-marquee">
-             {/* Fix: Explicitly cast entries to handle 'unknown' type inference on index signature access */}
+        <section className="bg-indigo-950/20 border-y border-indigo-500/10 p-4 overflow-hidden relative font-mono text-[10px]">
+           <div className="flex items-center gap-8 animate-marquee whitespace-nowrap">
              {(Object.entries(gameState.market) as [string, any][]).map(([key, val]) => (
                 <div key={key} className="flex gap-2">
-                  <span className="text-slate-500 uppercase">{key}:</span>
+                  <span className="text-indigo-500/60 uppercase">{key}:</span>
                   <span className={val.trend === 'up' ? 'text-green-400' : 'text-red-400'}>{val.price} CR</span>
                 </div>
              ))}
-             <span className="text-slate-600">| SUPABASE JSONB STORAGE: ACTIVE | NETWORK DELAY: MINIMAL |</span>
+             <span className="text-slate-600">| SUPABASE_DB_STABLE | JSONB_STORAGE_ACTIVE | TAX_RATE: %{(taxRate*100).toFixed(1)} |</span>
            </div>
         </section>
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
            <aside className="lg:col-span-1 glass rounded-3xl p-6 border-indigo-500/10 h-fit">
               <div className="flex items-center justify-between mb-6">
-                <h3 className="orbitron text-[10px] font-black text-indigo-400 tracking-widest uppercase">Cloud AI</h3>
+                <h3 className="orbitron text-[10px] font-black text-indigo-400 tracking-widest uppercase">Consultant</h3>
                 <Target size={16} className="text-indigo-500 animate-spin-slow" />
               </div>
-              <p className="text-xs text-slate-300 italic font-mono mb-6 leading-relaxed">"{aiAdvice}"</p>
-              <button onClick={getAiAdvice} className="w-full py-3 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-400 hover:text-white border border-indigo-500/30 font-bold orbitron text-[10px] rounded-xl transition-all">REFRESH ANALYSIS</button>
+              <p className="text-[11px] text-slate-300 italic font-mono mb-6 leading-relaxed">"{aiAdvice}"</p>
+              <button onClick={getAiAdvice} className="w-full py-3 bg-indigo-600/10 hover:bg-indigo-600 text-indigo-400 hover:text-white border border-indigo-500/30 font-bold orbitron text-[10px] rounded-xl transition-all">ESTABLISH UPLINK</button>
            </aside>
 
            <main className="lg:col-span-3 flex flex-col gap-6">
@@ -607,38 +635,38 @@ const App = () => {
                 <NavBtn active={activeTab === 'shop'} onClick={() => setActiveTab('shop')} icon={<ShoppingBag />} label="Shop" />
                 <NavBtn active={activeTab === 'tech'} onClick={() => setActiveTab('tech')} icon={<Microchip />} label="Tech" />
                 <NavBtn active={activeTab === 'market'} onClick={() => setActiveTab('market')} icon={<BarChart3 />} label="Trade" />
-                {currentUser.role === 'admin' && <NavBtn active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} icon={<ShieldCheck className="text-red-500" />} label="Control" activeColor="bg-red-600" />}
+                {currentUser.role === 'admin' && <NavBtn active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} icon={<ShieldCheck className="text-red-500" />} label="Admin" activeColor="bg-red-600" />}
               </nav>
 
               <div className="min-h-[400px]">
                 {activeTab === 'mine' && (
-                  <div className="flex flex-col items-center justify-center h-full animate-in fade-in zoom-in">
-                    <button onClick={mineManual} className="relative w-64 h-64 glass rounded-full flex flex-col items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-2xl group border-2 border-indigo-500/20">
-                      <div className="absolute inset-0 border-[10px] border-t-indigo-500/20 border-r-transparent border-b-transparent border-l-transparent rounded-full animate-spin-slow" />
+                  <div className="flex flex-col items-center justify-center h-full animate-in fade-in zoom-in duration-500">
+                    <button onClick={mineManual} className="relative w-64 h-64 glass rounded-full flex flex-col items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-[0_0_50px_rgba(79,70,229,0.1)] group border-2 border-indigo-500/20">
+                      <div className="absolute inset-0 border-[8px] border-t-indigo-500/40 border-r-transparent border-b-transparent border-l-transparent rounded-full animate-spin-slow" />
                       <Pickaxe size={48} className="text-indigo-400 mb-2 group-hover:rotate-12 transition-transform" />
-                      <span className="orbitron font-black text-white text-sm">EXTRACT RESOURCE</span>
+                      <span className="orbitron font-black text-white text-[11px] tracking-widest">MANUAL EXTRACTION</span>
                     </button>
                   </div>
                 )}
 
                 {activeTab === 'shop' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in slide-in-from-bottom-4">
-                    <ShopItem title="Hyper-Drones" icon={<Cpu />} lvl={gameState.upgrades.autoMiners} cost={UPGRADE_COSTS.autoMiners(gameState.upgrades.autoMiners)} onBuy={() => buyUpgrade('autoMiners', UPGRADE_COSTS.autoMiners)} canBuy={gameState.credits >= UPGRADE_COSTS.autoMiners(gameState.upgrades.autoMiners)} />
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in slide-in-from-bottom-4 duration-500">
+                    <ShopItem title="Mining Drones" icon={<Cpu />} lvl={gameState.upgrades.autoMiners} cost={UPGRADE_COSTS.autoMiners(gameState.upgrades.autoMiners)} onBuy={() => buyUpgrade('autoMiners', UPGRADE_COSTS.autoMiners)} canBuy={gameState.credits >= UPGRADE_COSTS.autoMiners(gameState.upgrades.autoMiners)} />
                     <ShopItem title="Plasma Core" icon={<Zap />} lvl={gameState.upgrades.plasmaExtractors} cost={UPGRADE_COSTS.plasmaExtractors(gameState.upgrades.plasmaExtractors)} onBuy={() => buyUpgrade('plasmaExtractors', UPGRADE_COSTS.plasmaExtractors)} canBuy={gameState.credits >= UPGRADE_COSTS.plasmaExtractors(gameState.upgrades.plasmaExtractors)} />
-                    <ShopItem title="Data Hub" icon={<Binary />} lvl={gameState.upgrades.researchHubs} cost={UPGRADE_COSTS.researchHubs(gameState.upgrades.researchHubs)} onBuy={() => buyUpgrade('researchHubs', UPGRADE_COSTS.researchHubs)} canBuy={gameState.credits >= UPGRADE_COSTS.researchHubs(gameState.upgrades.researchHubs)} />
+                    <ShopItem title="Research Unit" icon={<Binary />} lvl={gameState.upgrades.researchHubs} cost={UPGRADE_COSTS.researchHubs(gameState.upgrades.researchHubs)} onBuy={() => buyUpgrade('researchHubs', UPGRADE_COSTS.researchHubs)} canBuy={gameState.credits >= UPGRADE_COSTS.researchHubs(gameState.upgrades.researchHubs)} />
                     <ShopItem title="Cargo Expansion" icon={<Database />} lvl={gameState.upgrades.storageLevel} cost={UPGRADE_COSTS.storage(gameState.upgrades.storageLevel)} onBuy={() => buyUpgrade('storageLevel', UPGRADE_COSTS.storage)} canBuy={gameState.credits >= UPGRADE_COSTS.storage(gameState.upgrades.storageLevel)} />
                   </div>
                 )}
 
                 {activeTab === 'tech' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in zoom-in">
-                    <TechItem title="Neural Mining" desc="Increases manual mining yields." lvl={gameState.technologies.neuralMining} cost={TECH_COSTS.neuralMining(gameState.technologies.neuralMining)} onBuy={() => researchTech('neuralMining', TECH_COSTS.neuralMining)} canBuy={gameState.resources.dataBits >= TECH_COSTS.neuralMining(gameState.technologies.neuralMining)} />
-                    <TechItem title="Tax Optimization" desc="Reduces galactic sales tax." lvl={gameState.technologies.taxOptimization} cost={TECH_COSTS.taxOptimization(gameState.technologies.taxOptimization)} onBuy={() => researchTech('taxOptimization', TECH_COSTS.taxOptimization)} canBuy={gameState.resources.dataBits >= TECH_COSTS.taxOptimization(gameState.technologies.taxOptimization)} />
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in zoom-in duration-500">
+                    <TechItem title="Neural Mining" desc="Increases manual extraction power via cybernetics." lvl={gameState.technologies.neuralMining} cost={TECH_COSTS.neuralMining(gameState.technologies.neuralMining)} onBuy={() => researchTech('neuralMining', TECH_COSTS.neuralMining)} canBuy={gameState.resources.dataBits >= TECH_COSTS.neuralMining(gameState.technologies.neuralMining)} />
+                    <TechItem title="Market Optimization" desc="Global trade tax reduction through AI lobbying." lvl={gameState.technologies.taxOptimization} cost={TECH_COSTS.taxOptimization(gameState.technologies.taxOptimization)} onBuy={() => researchTech('taxOptimization', TECH_COSTS.taxOptimization)} canBuy={gameState.resources.dataBits >= TECH_COSTS.taxOptimization(gameState.technologies.taxOptimization)} />
                   </div>
                 )}
 
                 {activeTab === 'market' && (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-in slide-in-from-right-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-in slide-in-from-right-4 duration-500">
                     {Object.entries(BASE_MARKET_PRICES).map(([key]) => (
                        <MarketCard key={key} resource={key} data={gameState.market[key]} amount={(gameState.resources as any)[key]} onSell={() => sellResource(key)} tax={taxRate} />
                     ))}
@@ -650,8 +678,8 @@ const App = () => {
            </main>
         </div>
 
-        <footer className="text-center py-10 opacity-30 orbitron text-[9px] tracking-[0.5em] uppercase">
-          Nebula Galactic OS - Powered by Supabase & Gemini AI
+        <footer className="text-center py-10 opacity-30 orbitron text-[8px] tracking-[0.5em] uppercase">
+          Cloud Core v4.0 - Supabase Persistence Layer
         </footer>
       </div>
     </div>
@@ -675,7 +703,6 @@ const TECH_COSTS = {
   neuralMining: (l: number) => Math.floor(80 * Math.pow(2.8, l))
 };
 
-// --- Small UI Components ---
 const StatCard = ({ icon, label, val, color, limit }: any) => (
   <div className="glass p-4 rounded-2xl border-white/5 bg-slate-900/40 flex items-center gap-4">
     <div className={`p-3 bg-black/40 rounded-xl ${color}`}>{React.cloneElement(icon, { size: 16 })}</div>
@@ -702,9 +729,9 @@ const ShopItem = ({ title, icon, lvl, cost, onBuy, canBuy }: any) => (
       <div className="p-3 bg-slate-950 rounded-xl group-hover:scale-110 transition-transform text-indigo-400">{icon}</div>
       <span className="orbitron text-[9px] font-black text-indigo-500">LVL {lvl}</span>
     </div>
-    <h4 className="font-bold text-sm">{title}</h4>
-    <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl orbitron text-[9px] font-black transition-all ${canBuy ? 'bg-indigo-600 hover:bg-indigo-500 text-white' : 'bg-slate-800 text-slate-600'}`}>
-      UPGRADE: {cost.toLocaleString()} CR
+    <h4 className="font-bold text-sm tracking-tight">{title}</h4>
+    <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl orbitron text-[9px] font-black transition-all ${canBuy ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/10' : 'bg-slate-800 text-slate-600'}`}>
+      {cost.toLocaleString()} CR
     </button>
   </div>
 );
@@ -717,15 +744,14 @@ const TechItem = ({ title, desc, lvl, cost, onBuy, canBuy }: any) => (
     </div>
     <div>
       <h4 className="font-bold text-sm mb-1">{title}</h4>
-      <p className="text-[10px] text-slate-500 italic font-mono">{desc}</p>
+      <p className="text-[10px] text-slate-500 italic font-mono leading-tight">{desc}</p>
     </div>
-    <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl orbitron text-[9px] font-black transition-all ${canBuy ? 'bg-indigo-600 hover:bg-indigo-500 text-white' : 'bg-slate-800 text-slate-600'}`}>
-      RESEARCH: {cost.toLocaleString()} DATA
+    <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl orbitron text-[9px] font-black transition-all ${canBuy ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/10' : 'bg-slate-800 text-slate-600'}`}>
+      {cost.toLocaleString()} DATA
     </button>
   </div>
 );
 
-// Fix: Use 'any' for props to match other components and bypass the 'key' prop error on functional components when passed from JSX map
 const MarketCard = ({ resource, data, amount, onSell, tax }: any) => (
   <div className="glass p-6 rounded-3xl border-white/5 flex flex-col gap-6">
     <div className="flex items-center justify-between">
@@ -735,11 +761,11 @@ const MarketCard = ({ resource, data, amount, onSell, tax }: any) => (
       </div>
     </div>
     <div className="flex flex-col gap-1">
-      <span className="text-[9px] text-slate-500">HOLDINGS</span>
+      <span className="text-[9px] text-slate-500">CARGO HOLD</span>
       <p className="orbitron text-xl font-black text-white">{Math.floor(amount).toLocaleString()}</p>
     </div>
     <button onClick={onSell} disabled={amount <= 0} className={`w-full py-4 rounded-2xl orbitron text-[10px] font-black transition-all ${amount > 0 ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600'}`}>
-      SELL CARGO (%{(tax*100).toFixed(0)} TAX)
+      OFFLOAD (%{(tax*100).toFixed(0)} TAX)
     </button>
   </div>
 );
