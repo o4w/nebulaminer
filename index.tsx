@@ -33,12 +33,13 @@ import {
 import { createClient } from '@supabase/supabase-js';
 
 /**
- * --- KRİTİK: CLOUD SYNC HATASI ÇÖZÜMÜ ---
- * Eğer "CLOUD SYNC FAILED" hatası alıyorsanız ve hata mesajında "password violates not-null constraint" 
- * yazıyorsa, bu güncelleme sorunu çözecektir.
+ * --- KRİTİK: COLUMN 'updated_at' NOT FOUND HATASI ÇÖZÜMÜ ---
+ * Supabase Dashboard -> SQL Editor kısmına aşağıdaki komutları yapıştırıp 'Run' diyerek sütunu ekleyin:
  * 
- * SQL KOMUTLARI (Supabase SQL Editor'de çalıştırın):
+ * -- 1. Eksik Sütunu Ekle
+ * ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at timestamp with time zone DEFAULT now();
  * 
+ * -- 2. Eğer Tablolar Hiç Yoksa Tam Liste:
  * create table if not exists users (
  *   id text primary key,
  *   password text not null,
@@ -216,7 +217,6 @@ const DBService = {
     }
   },
   saveUser: async (user: UserData) => {
-    // Kayıt sırasında şifre de gönderildiği için upsert kullanılabilir
     const { error } = await supabase.from('users').upsert({
       id: user.id,
       password: user.password,
@@ -229,16 +229,24 @@ const DBService = {
   },
   updateGameState: async (userId: string, state: GameState) => {
     try {
-      // DÜZELTME: Upsert yerine update kullanıyoruz.
-      // Upsert, olmayan satırı eklerken şifre göndermediğimiz için "null password" hatası veriyordu.
-      // update sadece belirtilen sütunları günceller.
       const { error } = await supabase
         .from('users')
-        .update({ game_state: state, updated_at: new Date().toISOString() })
+        .update({ 
+          game_state: state, 
+          updated_at: new Date().toISOString() 
+        })
         .eq('id', userId);
       
       if (error) {
         console.error("Supabase UpdateGameState Error:", error.message);
+        // Eğer hata updated_at sütunu ile ilgiliyse, sütunsuz güncellemeyi dene
+        if (error.message.includes('updated_at')) {
+          const { error: retryError } = await supabase
+            .from('users')
+            .update({ game_state: state })
+            .eq('id', userId);
+          return retryError;
+        }
         return error;
       }
       return null;
@@ -314,7 +322,7 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
       }
     } catch (err: any) {
       console.error(err);
-      setError(`Bağlantı Hatası: ${err.message || 'Supabase tabloları eksik olabilir.'}`);
+      setError(`Bağlantı Hatası: ${err.message || 'Supabase ayarları eksik.'}`);
     } finally {
       setLoading(false);
     }
@@ -322,13 +330,13 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-black p-4">
-      <div className="max-w-md w-full glass rounded-[2rem] p-10 border border-cyan-500/20 shadow-[0_0_100px_rgba(6,182,212,0.1)]">
+      <div className="max-w-md w-full glass rounded-[2rem] p-10 border border-cyan-500/20 shadow-[0_0_100px_rgba(6,182,212,0.1)] text-left">
         <div className="text-center mb-8">
           <div className="w-20 h-20 bg-cyan-500/10 rounded-3xl mx-auto flex items-center justify-center border border-cyan-500/30 mb-6 rotate-3 hover:rotate-0 transition-transform">
             <Globe className="text-cyan-400 w-10 h-10 animate-pulse" />
           </div>
-          <h1 className="orbitron text-2xl font-black text-white tracking-tighter uppercase">Nebula OS v2.9</h1>
-          <p className="text-slate-500 text-xs mt-2 font-mono italic">Database Patch Applied</p>
+          <h1 className="orbitron text-2xl font-black text-white tracking-tighter uppercase">Nebula OS v2.9.1</h1>
+          <p className="text-slate-500 text-xs mt-2 font-mono italic">Schema Sync Fix</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <input required type="text" placeholder="Pilot ID" value={userId} onChange={e => setUserId(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none transition-all font-mono" />
@@ -630,7 +638,8 @@ const App = () => {
     if (error) {
       setSaveError(error.message);
       let diagMessage = "Supabase bağlantı hatası.\n\n";
-      if (error.message.includes("users")) diagMessage += "Hata: 'users' tablosu bulunamadı. Lütfen SQL scriptini çalıştırın.";
+      if (error.message.includes("updated_at")) diagMessage += "Hata: 'updated_at' sütunu bulunamadı. Lütfen SQL scriptini çalıştırın.";
+      else if (error.message.includes("users")) diagMessage += "Hata: 'users' tablosu bulunamadı. Lütfen SQL scriptini çalıştırın.";
       else if (error.message.includes("permission") || error.message.includes("policy")) diagMessage += "Hata: RLS (Row Level Security) kısıtlaması. Lütfen dashboard'dan RLS'i devre dışı bırakın.";
       else diagMessage += `Hata Detayı: ${error.message}`;
       alert(diagMessage);
@@ -688,7 +697,7 @@ const App = () => {
           <div className="bg-red-500/10 border border-red-500/20 p-3 rounded-2xl flex items-center gap-3 animate-pulse">
             <AlertCircle size={18} className="text-red-500" />
             <div className="flex-1 text-[10px] font-mono text-red-400 uppercase tracking-tight">
-              Cloud synchronization suspended. <span className="font-bold underline cursor-help" onClick={() => alert("Hata giderildi. Lütfen 'RETRY SYNC' butonuna basarak verilerinizi tekrar senkronize edin.")}>Click for info.</span>
+              Cloud synchronization suspended. <span className="font-bold underline cursor-help" onClick={() => alert("Hata: 'updated_at' sütunu bulunamadı. Supabase SQL Editor'de şunu çalıştırın: ALTER TABLE users ADD COLUMN updated_at timestamp with time zone DEFAULT now();")}>Click for diagnostics.</span>
             </div>
             <button onClick={forceSync} className="px-3 py-1 bg-red-500 text-white text-[9px] orbitron font-black rounded-lg hover:bg-red-400 transition-colors">
               RETRY SYNC
@@ -709,7 +718,7 @@ const App = () => {
                 </div>
               </div>
             ))}
-            <span className="text-slate-600 ml-10">| DATABASE PATCH V2.9 | SYNC MODE: UPDATE-ONLY | STABILITY: OPTIMAL |</span>
+            <span className="text-slate-600 ml-10">| PATCH 2.9.1 | FIX: UPDATED_AT SCHEMA | AUTO-SAVE: 20s | CONNECTION: STABLE |</span>
           </div>
         </section>
 
@@ -720,7 +729,7 @@ const App = () => {
                   <h3 className="orbitron text-xs font-black text-yellow-500 uppercase tracking-widest">Active Missions</h3>
                   <Target size={16} className="text-yellow-500" />
                 </div>
-                <div className="space-y-3">
+                <div className="space-y-3 text-left">
                   {(gameState.missions || []).map(m => (
                     <div key={m.id} className={`p-3 rounded-xl border ${m.completed ? 'bg-green-500/10 border-green-500/20 opacity-50' : 'bg-black/40 border-white/5'}`}>
                       <div className="flex justify-between items-center mb-1">
@@ -744,7 +753,7 @@ const App = () => {
                     FORCE SYNC
                   </button>
                   <button 
-                    onClick={() => alert("Hata Çözüldü:\nVeritabanı güncelleme yöntemi değiştirildi. Artık şifre alanı hatası almayacaksınız.")}
+                    onClick={() => alert("SQL Çözümü:\n\nALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at timestamp with time zone DEFAULT now();\n\nKomutunu SQL Editor'de çalıştırın.")}
                     className="w-full py-2 rounded-xl border border-slate-700 text-slate-500 hover:text-white transition-all text-[10px] orbitron font-bold flex items-center justify-center gap-2"
                   >
                     <Info size={14} /> DB HELP
@@ -771,7 +780,6 @@ const App = () => {
             </nav>
 
             <div className="flex-1 min-h-[500px]">
-              {/* Tab İçerikleri Buraya Gelecek */}
               {activeTab === 'mine' && (
                 <div className="flex flex-col items-center justify-center min-h-[400px] animate-in fade-in zoom-in duration-500">
                   <div className="relative group mb-12">
@@ -891,7 +899,7 @@ const App = () => {
               )}
 
               {activeTab === 'social' && (
-                <div className="glass rounded-3xl p-8 border border-white/5 animate-in fade-in duration-500">
+                <div className="glass rounded-3xl p-8 border border-white/5 animate-in fade-in duration-500 text-left">
                    <div className="flex items-center gap-4 mb-8">
                      <Trophy size={32} className="text-yellow-400" />
                      <h2 className="orbitron text-xl font-black italic uppercase tracking-widest">Global Leaderboard</h2>
@@ -919,8 +927,8 @@ const App = () => {
         </div>
 
         <footer className="text-center py-12 border-t border-slate-900/50">
-           <p className="orbitron text-[9px] font-black text-slate-700 uppercase tracking-[0.5em] mb-2">Nebula Galactic Protocol | v2.9 Patch</p>
-           <p className="text-[8px] font-mono text-slate-800 uppercase tracking-widest">Connected Node: {SUPABASE_URL.replace('https://', '').split('.')[0]}</p>
+           <p className="orbitron text-[9px] font-black text-slate-700 uppercase tracking-[0.5em] mb-2">Nebula Galactic Protocol | v2.9.1 Schema Fix</p>
+           <p className="text-[8px] font-mono text-slate-800 uppercase tracking-widest">Node ID: {SUPABASE_URL.replace('https://', '').split('.')[0]}</p>
         </footer>
       </div>
     </div>
@@ -929,9 +937,9 @@ const App = () => {
 
 // --- Subcomponents ---
 const ResourceCard = ({ icon, label, val, color, limit }: any) => (
-  <div className="glass p-4 rounded-2xl border border-white/5 flex items-center gap-4 bg-slate-900/20">
+  <div className="glass p-4 rounded-2xl border border-white/5 flex items-center gap-4 bg-slate-900/20 text-left">
     <div className={`p-3 bg-slate-950 rounded-xl shadow-inner ${color}`}>{React.cloneElement(icon, { size: 18 })}</div>
-    <div className="flex flex-col text-left">
+    <div className="flex flex-col">
       <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">{label}</span>
       <span className={`orbitron text-xs font-bold ${color}`}>
         {Math.floor(val || 0).toLocaleString()}
@@ -956,12 +964,12 @@ const NavBtn = ({ active, onClick, icon, label }: any) => (
 );
 
 const ShopItem = ({ title, lvl, cost, canBuy, onBuy, icon }: any) => (
-  <div className="glass p-5 rounded-2xl border border-white/5 flex flex-col gap-4 group hover:border-cyan-500/20 transition-all bg-slate-900/20">
+  <div className="glass p-5 rounded-2xl border border-white/5 flex flex-col gap-4 group hover:border-cyan-500/20 transition-all bg-slate-900/20 text-left">
     <div className="flex justify-between items-center">
       <div className="p-3 bg-slate-950 rounded-xl group-hover:scale-110 transition-transform">{icon}</div>
       <span className="orbitron text-[10px] font-black text-cyan-400 bg-cyan-400/10 px-3 py-1 rounded-full uppercase tracking-tighter">LVL {lvl}</span>
     </div>
-    <h4 className="font-bold text-slate-200 text-sm uppercase tracking-tight text-left">{title}</h4>
+    <h4 className="font-bold text-slate-200 text-sm uppercase tracking-tight">{title}</h4>
     <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl font-black orbitron text-[10px] transition-all tracking-widest ${canBuy ? 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg shadow-cyan-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
       UPGRADE: {(cost || 0).toLocaleString()} CR
     </button>
