@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import { 
   Pickaxe, 
@@ -18,9 +18,15 @@ import {
   Cpu,
   Settings,
   ArrowUpRight,
-  RefreshCw
+  RefreshCw,
+  Trophy,
+  AlertCircle,
+  Star,
+  Users,
+  PlusCircle,
+  XCircle,
+  ArrowRightLeft
 } from 'lucide-react';
-import { GoogleGenAI } from "@google/genai";
 import { createClient } from '@supabase/supabase-js';
 
 // --- Supabase Client Initialization ---
@@ -48,8 +54,33 @@ interface MarketState {
     price: number; 
     trend: 'up' | 'down' | 'stable'; 
     demand: number;
-    nextPriceHint?: number;
   };
+}
+
+interface CosmicEvent {
+  id: string;
+  name: string;
+  description: string;
+  effect: 'plasma_boost' | 'iron_crash' | 'research_surge' | 'none';
+  duration: number;
+}
+
+interface Mission {
+  id: string;
+  title: string;
+  description: string;
+  requirement: { type: keyof ResourceState | 'credits'; amount: number };
+  reward: number;
+  completed: boolean;
+}
+
+interface MarketListing {
+  id: string;
+  seller_id: string;
+  resource_type: keyof typeof BASE_MARKET_PRICES;
+  amount: number;
+  price: number;
+  created_at: string;
 }
 
 interface GameState {
@@ -65,6 +96,7 @@ interface GameState {
   };
   technologies: TechState;
   market: MarketState;
+  missions: Mission[];
   lastUpdate: number;
 }
 
@@ -74,9 +106,20 @@ interface UserData {
   gameState: GameState;
 }
 
+interface LeaderboardEntry {
+  id: string;
+  credits: number;
+}
+
 // --- Constants ---
 const BASE_MARKET_PRICES = { iron: 2, plasma: 15, crystal: 50 };
 const MARKET_TAX_BASE = 0.20;
+
+const INITIAL_MISSIONS: Mission[] = [
+  { id: '1', title: 'İlk Adım', description: '500 Demir topla.', requirement: { type: 'iron', amount: 500 }, reward: 250, completed: false },
+  { id: '2', title: 'Enerji Ağı', description: '100 Plazma topla.', requirement: { type: 'plasma', amount: 100 }, reward: 1000, completed: false },
+  { id: '3', title: 'Kripto Tüccarı', description: '5000 Kredi biriktir.', requirement: { type: 'credits', amount: 5000 }, reward: 2000, completed: false }
+];
 
 const INITIAL_GAME_STATE: GameState = {
   credits: 100,
@@ -100,6 +143,7 @@ const INITIAL_GAME_STATE: GameState = {
     plasma: { price: 15, trend: 'stable', demand: 30 },
     crystal: { price: 50, trend: 'stable', demand: 10 }
   },
+  missions: INITIAL_MISSIONS,
   lastUpdate: Date.now()
 };
 
@@ -142,6 +186,44 @@ const DBService = {
   },
   updateGameState: async (userId: string, state: GameState) => {
     await supabase.from('users').update({ game_state: state }).eq('id', userId);
+  },
+  getLeaderboard: async (): Promise<LeaderboardEntry[]> => {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, game_state->credits')
+      .order('game_state->credits', { ascending: false })
+      .limit(10);
+    
+    if (error) return [];
+    return (data || []).map(u => ({ id: u.id, credits: Number(u.credits || 0) }));
+  },
+  // P2P Market Functions
+  getListings: async (): Promise<MarketListing[]> => {
+    const { data, error } = await supabase
+      .from('market_listings')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) return [];
+    return data || [];
+  },
+  postListing: async (listing: Omit<MarketListing, 'id' | 'created_at'>) => {
+    await supabase.from('market_listings').insert(listing);
+  },
+  cancelListing: async (listingId: string) => {
+    await supabase.from('market_listings').delete().eq('id', listingId);
+  },
+  purchaseListing: async (listing: MarketListing, buyerId: string, buyerState: GameState) => {
+    // 1. Fetch seller's latest state
+    const seller = await DBService.getUser(listing.seller_id);
+    if (!seller) throw new Error("Seller not found");
+
+    // 2. Add credits to seller
+    const sellerState = seller.gameState;
+    sellerState.credits += listing.price;
+    await DBService.updateGameState(listing.seller_id, sellerState);
+
+    // 3. Remove listing
+    await DBService.cancelListing(listing.id);
   }
 };
 
@@ -189,8 +271,8 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
           <div className="w-20 h-20 bg-cyan-500/10 rounded-3xl mx-auto flex items-center justify-center border border-cyan-500/30 mb-6 rotate-3 hover:rotate-0 transition-transform">
             <Globe className="text-cyan-400 w-10 h-10 animate-pulse" />
           </div>
-          <h1 className="orbitron text-2xl font-black text-white tracking-tighter uppercase">Nebula OS v2.1</h1>
-          <p className="text-slate-500 text-xs mt-2 font-mono">Cloud-Synced Persistence Node</p>
+          <h1 className="orbitron text-2xl font-black text-white tracking-tighter uppercase">Nebula OS v2.5</h1>
+          <p className="text-slate-500 text-xs mt-2 font-mono">P2P Trade Node Enabled</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <input required type="text" placeholder="Pilot ID" value={userId} onChange={e => setUserId(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none transition-all font-mono" />
@@ -212,9 +294,19 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
 const App = () => {
   const [currentUser, setCurrentUser] = useState<UserData | null>(null);
   const [gameState, setGameState] = useState<GameState>(INITIAL_GAME_STATE);
-  const [activeTab, setActiveTab] = useState<'mine' | 'shop' | 'tech' | 'market'>('mine');
-  const [aiAdvice, setAiAdvice] = useState<string>("Ekonomik veriler analiz ediliyor...");
+  const [activeTab, setActiveTab] = useState<'mine' | 'shop' | 'tech' | 'market' | 'social' | 'trade'>('mine');
   const [isSaving, setIsSaving] = useState(false);
+  const [activeEvent, setActiveEvent] = useState<CosmicEvent | null>(null);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [marketListings, setMarketListings] = useState<MarketListing[]>([]);
+  const [floatingTexts, setFloatingTexts] = useState<{ id: number, text: string, x: number, y: number }[]>([]);
+
+  // P2P Form State
+  const [p2pForm, setP2pForm] = useState<{ resource: keyof typeof BASE_MARKET_PRICES, amount: number, price: number }>({
+    resource: 'iron',
+    amount: 0,
+    price: 0
+  });
 
   const taxRate = useMemo(() => 
     Math.max(0.05, MARKET_TAX_BASE - (gameState.technologies.taxOptimization * 0.03)), 
@@ -226,6 +318,27 @@ const App = () => {
     [gameState.upgrades.storageLevel, gameState.technologies.nanoStorage]
   );
 
+  // --- Olay Sistemi (Random Cosmic Events) ---
+  useEffect(() => {
+    if (!currentUser) return;
+    const eventInterval = setInterval(() => {
+      if (activeEvent) return;
+      const roll = Math.random();
+      if (roll < 0.2) { 
+        const events: CosmicEvent[] = [
+          { id: '1', name: 'Güneş Fırtınası', description: 'Plazma üretimi %100 arttı!', effect: 'plasma_boost', duration: 30 },
+          { id: '2', name: 'Meteor Yağmuru', description: 'Demir fiyatları dip yaptı!', effect: 'iron_crash', duration: 30 },
+          { id: '3', name: 'Araştırma Patlaması', description: 'Veri üretimi %200 arttı!', effect: 'research_surge', duration: 30 }
+        ];
+        const selected = events[Math.floor(Math.random() * events.length)];
+        setActiveEvent(selected);
+        setTimeout(() => setActiveEvent(null), selected.duration * 1000);
+      }
+    }, 45000);
+    return () => clearInterval(eventInterval);
+  }, [currentUser, activeEvent]);
+
+  // --- Üretim Döngüsü ---
   useEffect(() => {
     if (!currentUser) return;
     const interval = setInterval(() => {
@@ -233,21 +346,27 @@ const App = () => {
         const now = Date.now();
         const delta = (now - prev.lastUpdate) / 1000;
         
+        let plasmaMult = 1;
+        let researchMult = 1;
+        if (activeEvent?.effect === 'plasma_boost') plasmaMult = 2;
+        if (activeEvent?.effect === 'research_surge') researchMult = 3;
+
         return {
           ...prev,
           resources: {
             iron: Math.min(currentStorageLimit, prev.resources.iron + (prev.upgrades.autoMiners * 1 * delta)),
-            plasma: Math.min(currentStorageLimit, prev.resources.plasma + (prev.upgrades.plasmaExtractors * 0.5 * delta)),
+            plasma: Math.min(currentStorageLimit, prev.resources.plasma + (prev.upgrades.plasmaExtractors * 0.5 * delta * plasmaMult)),
             crystal: Math.min(currentStorageLimit, prev.resources.crystal + (prev.upgrades.crystalRefineries * 0.1 * delta)),
-            dataBits: prev.resources.dataBits + (prev.upgrades.researchHubs * 0.2 * delta)
+            dataBits: prev.resources.dataBits + (prev.upgrades.researchHubs * 0.2 * delta * researchMult)
           },
           lastUpdate: now
         };
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [currentUser, currentStorageLimit]);
+  }, [currentUser, currentStorageLimit, activeEvent]);
 
+  // --- Market Döngüsü ---
   useEffect(() => {
     if (!currentUser) return;
     const marketInterval = setInterval(() => {
@@ -255,25 +374,69 @@ const App = () => {
         const newMarket = { ...prev.market };
         (Object.keys(BASE_MARKET_PRICES) as Array<keyof typeof BASE_MARKET_PRICES>).forEach(key => {
           const base = (BASE_MARKET_PRICES as any)[key];
-          const current = prev.market[key].price;
-          const demandFactor = 0.5 + (Math.random() * (prev.market[key].demand / 50));
-          const nextPrice = Math.max(1, Math.round(base * demandFactor * (0.8 + Math.random() * 0.4) * 10) / 10);
+          const current = prev.market[key]?.price || base;
+          
+          let eventModifier = 1;
+          if (activeEvent?.effect === 'iron_crash' && key === 'iron') eventModifier = 0.4;
+
+          const demandFactor = 0.5 + (Math.random() * ((prev.market[key]?.demand || 50) / 50));
+          const nextPrice = Math.max(0.5, Math.round(base * demandFactor * (0.8 + Math.random() * 0.4) * eventModifier * 10) / 10);
+          
           let trend: 'up' | 'down' | 'stable' = 'stable';
           if (nextPrice > current) trend = 'up';
           else if (nextPrice < current) trend = 'down';
+          
           newMarket[key] = { 
             price: nextPrice, 
             trend, 
-            demand: Math.max(10, Math.min(100, prev.market[key].demand + (Math.random() * 20 - 10))) 
+            demand: Math.max(10, Math.min(100, (prev.market[key]?.demand || 50) + (Math.random() * 20 - 10))) 
           };
         });
         return { ...prev, market: newMarket };
       });
     }, 15000);
     return () => clearInterval(marketInterval);
-  }, [currentUser]);
+  }, [currentUser, activeEvent]);
 
-  // Debounced Auto-Save to Supabase
+  // --- Görev Kontrolü ---
+  useEffect(() => {
+    if (!currentUser || !gameState.missions) return;
+    setGameState(prev => {
+      let changed = false;
+      const newMissions = (prev.missions || []).map(m => {
+        if (m.completed) return m;
+        let isComplete = false;
+        if (m.requirement.type === 'credits') isComplete = prev.credits >= m.requirement.amount;
+        else isComplete = prev.resources[m.requirement.type] >= m.requirement.amount;
+
+        if (isComplete) {
+          changed = true;
+          return { ...m, completed: true };
+        }
+        return m;
+      });
+
+      if (changed) {
+        const reward = newMissions.filter((m, i) => m.completed && !(prev.missions[i]?.completed)).reduce((acc, m) => acc + m.reward, 0);
+        return { ...prev, credits: prev.credits + reward, missions: newMissions };
+      }
+      return prev;
+    });
+  }, [gameState.resources, gameState.credits, currentUser]);
+
+  // --- Market & Leaderboard Sync ---
+  const syncGlobalData = useCallback(() => {
+    if (activeTab === 'social') DBService.getLeaderboard().then(setLeaderboard);
+    if (activeTab === 'trade') DBService.getListings().then(setMarketListings);
+  }, [activeTab]);
+
+  useEffect(() => {
+    syncGlobalData();
+    const syncInterval = setInterval(syncGlobalData, 10000);
+    return () => clearInterval(syncInterval);
+  }, [activeTab, syncGlobalData]);
+
+  // --- Auto-Save ---
   useEffect(() => {
     if (currentUser) {
       const saveTimeout = setTimeout(async () => {
@@ -285,11 +448,28 @@ const App = () => {
     }
   }, [gameState, currentUser]);
 
-  if (!currentUser) return <AuthScreen onLogin={u => { setCurrentUser(u); setGameState(u.gameState); }} />;
+  if (!currentUser) return <AuthScreen onLogin={u => { 
+    setCurrentUser(u); 
+    const safeState = {
+      ...INITIAL_GAME_STATE,
+      ...u.gameState,
+      resources: { ...INITIAL_GAME_STATE.resources, ...(u.gameState?.resources || {}) },
+      upgrades: { ...INITIAL_GAME_STATE.upgrades, ...(u.gameState?.upgrades || {}) },
+      technologies: { ...INITIAL_GAME_STATE.technologies, ...(u.gameState?.technologies || {}) },
+      market: { ...INITIAL_GAME_STATE.market, ...(u.gameState?.market || {}) },
+      missions: u.gameState?.missions || INITIAL_MISSIONS
+    };
+    setGameState(safeState); 
+  }} />;
 
-  const mineManual = () => {
+  const mineManual = (e: React.MouseEvent) => {
     if (gameState.resources.iron < currentStorageLimit) {
       const power = gameState.upgrades.pickaxePower + (gameState.technologies.neuralMining * 2);
+      
+      const newText = { id: Date.now(), text: `+${power} Demir`, x: e.clientX, y: e.clientY };
+      setFloatingTexts(prev => [...prev, newText]);
+      setTimeout(() => setFloatingTexts(prev => prev.filter(t => t.id !== newText.id)), 1000);
+
       setGameState(prev => ({
         ...prev,
         resources: { ...prev.resources, iron: Math.min(currentStorageLimit, prev.resources.iron + power) }
@@ -300,7 +480,7 @@ const App = () => {
   const sellResource = (type: keyof typeof BASE_MARKET_PRICES) => {
     const amount = (gameState.resources as any)[type];
     if (amount <= 0) return;
-    const taxedProfit = amount * gameState.market[type].price * (1 - taxRate);
+    const taxedProfit = amount * (gameState.market[type]?.price || 0) * (1 - taxRate);
     setGameState(prev => ({
       ...prev,
       credits: prev.credits + taxedProfit,
@@ -330,17 +510,73 @@ const App = () => {
     }
   };
 
-  const getAiStrategy = async () => {
+  const handlePostTrade = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const { resource, amount, price } = p2pForm;
+    if (gameState.resources[resource] < amount || amount <= 0 || price <= 0) return;
+
+    // Escrow logic: deduct resources now
+    setGameState(prev => ({
+      ...prev,
+      resources: { ...prev.resources, [resource]: prev.resources[resource] - amount }
+    }));
+
+    await DBService.postListing({
+      seller_id: currentUser.id,
+      resource_type: resource,
+      amount,
+      price
+    });
+
+    syncGlobalData();
+    setP2pForm(prev => ({ ...prev, amount: 0, price: 0 }));
+  };
+
+  const handleBuyListing = async (listing: MarketListing) => {
+    if (gameState.credits < listing.price) return;
+    
+    // Check storage
+    if (gameState.resources[listing.resource_type] + listing.amount > currentStorageLimit) {
+      alert("Storage full! Upgrade cargo space.");
+      return;
+    }
+
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `Sen Nebula Miner ekonomi danışmanısın. Vergi Oranı: %${(taxRate*100).toFixed(0)}, Kredi: ${gameState.credits}, Demir Talebi: ${gameState.market.iron.demand}. Oyuncuya kısa, teknolojik terimlerle dolu bir borsa taktiği ver.`;
-      const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
-      setAiAdvice(response.text || "Veri hattı meşgul.");
-    } catch { setAiAdvice("Derin uzay sinyal kaybı."); }
+      await DBService.purchaseListing(listing, currentUser.id, gameState);
+      
+      // Update buyer local state
+      setGameState(prev => ({
+        ...prev,
+        credits: prev.credits - listing.price,
+        resources: { ...prev.resources, [listing.resource_type]: prev.resources[listing.resource_type] + listing.amount }
+      }));
+
+      syncGlobalData();
+    } catch (err) {
+      alert("Trade failed: " + err);
+    }
+  };
+
+  const handleCancelListing = async (listing: MarketListing) => {
+    await DBService.cancelListing(listing.id);
+    
+    // Refund resources
+    setGameState(prev => ({
+      ...prev,
+      resources: { ...prev.resources, [listing.resource_type]: prev.resources[listing.resource_type] + listing.amount }
+    }));
+
+    syncGlobalData();
   };
 
   return (
-    <div className="min-h-screen bg-[#020617] text-slate-100 p-4 md:p-8 font-sans selection:bg-cyan-500/30">
+    <div className="min-h-screen bg-[#020617] text-slate-100 p-4 md:p-8 font-sans selection:bg-cyan-500/30 overflow-x-hidden">
+      {floatingTexts.map(t => (
+        <div key={t.id} className="fixed pointer-events-none animate-bounce text-cyan-400 orbitron text-xs font-black z-50" style={{ left: t.x, top: t.y }}>
+          {t.text}
+        </div>
+      ))}
+
       <div className="max-w-7xl mx-auto flex flex-col gap-6">
         <header className="glass rounded-3xl p-6 flex flex-col md:flex-row justify-between items-center gap-4 border border-white/5 shadow-2xl relative">
           <div className="flex items-center gap-6">
@@ -355,6 +591,17 @@ const App = () => {
               </p>
             </div>
           </div>
+
+          {activeEvent && (
+            <div className="flex-1 max-w-sm px-6 py-2 bg-yellow-500/10 border border-yellow-500/20 rounded-2xl flex items-center gap-4 animate-pulse">
+               <AlertCircle className="text-yellow-400 shrink-0" size={18} />
+               <div className="flex flex-col">
+                 <span className="text-[10px] orbitron font-black text-yellow-400 uppercase">{activeEvent.name}</span>
+                 <span className="text-[8px] text-slate-400 font-mono uppercase">{activeEvent.description}</span>
+               </div>
+            </div>
+          )}
+
           <div className="flex items-center gap-3">
             <div className="bg-slate-900/80 px-6 py-3 rounded-2xl border border-yellow-500/20 shadow-inner flex flex-col items-end">
               <span className="text-[9px] font-black text-yellow-600 uppercase tracking-widest">Global Balance</span>
@@ -368,34 +615,49 @@ const App = () => {
 
         <section className="bg-cyan-950/20 border-y border-cyan-500/10 p-4 overflow-hidden relative">
           <div className="flex items-center gap-8 whitespace-nowrap animate-marquee">
-            {(Object.entries(gameState.market) as [string, MarketState[string]][]).map(([key, val]) => (
+            {(Object.entries(gameState.market || {}) as [string, MarketState[string]][]).map(([key, val]) => (
               <div key={key} className="flex items-center gap-3 font-mono text-xs uppercase tracking-tighter">
                 <span className="text-slate-500">{key}:</span>
-                <span className={val.trend === 'up' ? 'text-green-400' : 'text-red-400'}>
-                  {val.price} CR {val.trend === 'up' ? '↑' : '↓'}
+                <span className={val?.trend === 'up' ? 'text-green-400' : 'text-red-400'}>
+                  {val?.price || 0} CR {val?.trend === 'up' ? '↑' : '↓'}
                 </span>
                 <div className="w-12 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                  <div className="h-full bg-cyan-500/50" style={{ width: `${val.demand}%` }} />
+                  <div className="h-full bg-cyan-500/50" style={{ width: `${val?.demand || 50}%` }} />
                 </div>
               </div>
             ))}
-            <span className="text-slate-600 ml-10">| CLOUD CONNECTED | SECTOR STABILITY: NOMINAL |</span>
+            <span className="text-slate-600 ml-10">| P2P TRADING ACTIVE | COSMIC STATUS: {activeEvent ? 'UNSTABLE' : 'NORMAL'} | PILOT CONNECTED |</span>
           </div>
         </section>
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           <aside className="lg:col-span-1 flex flex-col gap-6">
-             <div className="glass rounded-3xl p-6 border border-purple-500/20 bg-purple-500/5 h-full">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="orbitron text-xs font-black text-purple-400 uppercase tracking-widest">AI Consultant</h3>
-                  <Target size={16} className="text-purple-500 animate-spin-slow" />
+             <div className="glass rounded-3xl p-6 border border-yellow-500/20 bg-yellow-500/5">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="orbitron text-xs font-black text-yellow-500 uppercase tracking-widest">Active Missions</h3>
+                  <Target size={16} className="text-yellow-500" />
                 </div>
-                <div className="bg-black/40 p-4 rounded-xl mb-4 border border-purple-500/10 min-h-[120px]">
-                  <p className="text-xs text-slate-300 italic font-mono leading-relaxed">"{aiAdvice}"</p>
+                <div className="space-y-3">
+                  {(gameState.missions || []).map(m => (
+                    <div key={m.id} className={`p-3 rounded-xl border ${m.completed ? 'bg-green-500/10 border-green-500/20 opacity-50' : 'bg-black/40 border-white/5'}`}>
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-[9px] font-black orbitron text-white">{m.title}</span>
+                        {m.completed && <Star size={10} className="text-yellow-400 fill-yellow-400" />}
+                      </div>
+                      <p className="text-[8px] text-slate-500 font-mono">{m.description}</p>
+                      {!m.completed && (
+                        <div className="mt-2 h-1 bg-slate-800 rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-yellow-500" 
+                            style={{ 
+                              width: `${Math.min(100, (m.requirement.type === 'credits' ? gameState.credits : (gameState.resources as any)[m.requirement.type]) / m.requirement.amount * 100)}%` 
+                            }} 
+                          />
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
-                <button onClick={getAiStrategy} className="w-full py-3 bg-purple-600 hover:bg-purple-500 text-white font-black orbitron text-[10px] rounded-xl transition-all shadow-lg shadow-purple-900/20 active:scale-95">
-                  RUN ANALYSIS
-                </button>
              </div>
           </aside>
 
@@ -407,11 +669,13 @@ const App = () => {
                <ResourceCard icon={<Binary />} label="Data Bits" val={gameState.resources.dataBits} color="text-blue-400" />
             </div>
 
-            <nav className="flex bg-slate-900/50 p-1 rounded-2xl self-start border border-white/5">
+            <nav className="flex bg-slate-900/50 p-1 rounded-2xl self-start border border-white/5 overflow-x-auto max-w-full">
               <NavBtn active={activeTab === 'mine'} onClick={() => setActiveTab('mine')} icon={<Pickaxe />} label="Mine" />
               <NavBtn active={activeTab === 'shop'} onClick={() => setActiveTab('shop')} icon={<ShoppingBag />} label="Upgrades" />
               <NavBtn active={activeTab === 'tech'} onClick={() => setActiveTab('tech')} icon={<Microchip />} label="Research" />
               <NavBtn active={activeTab === 'market'} onClick={() => setActiveTab('market')} icon={<BarChart3 />} label="Market" />
+              <NavBtn active={activeTab === 'trade'} onClick={() => setActiveTab('trade')} icon={<ArrowRightLeft />} label="Trade" />
+              <NavBtn active={activeTab === 'social'} onClick={() => setActiveTab('social')} icon={<Trophy />} label="Social" />
             </nav>
 
             <div className="flex-1">
@@ -419,7 +683,7 @@ const App = () => {
                 <div className="flex flex-col items-center justify-center min-h-[400px] animate-in fade-in zoom-in duration-500">
                   <div className="relative group mb-12">
                      <div className="absolute -inset-10 bg-cyan-500/10 rounded-full blur-3xl group-hover:bg-cyan-500/20 transition-all animate-pulse" />
-                     <button onClick={mineManual} className="relative w-56 h-56 md:w-72 md:h-72 glass border-4 border-slate-700/50 rounded-full flex flex-col items-center justify-center gap-3 hover:scale-105 active:scale-90 transition-all shadow-2xl">
+                     <button onClick={mineManual} className="relative w-56 h-56 md:w-72 md:h-72 glass border-4 border-slate-700/50 rounded-full flex flex-col items-center justify-center gap-3 hover:scale-105 active:scale-90 transition-all shadow-2xl overflow-hidden">
                         <div className="absolute inset-0 border-[20px] border-t-cyan-500/20 border-r-transparent border-b-transparent border-l-transparent rounded-full animate-spin-slow" />
                         <Pickaxe size={48} className="text-cyan-400" />
                         <span className="orbitron text-sm font-black text-white tracking-widest">ASTEROID CORE</span>
@@ -428,8 +692,8 @@ const App = () => {
                   </div>
                   <div className="grid grid-cols-3 gap-8 text-center">
                     <ProductionStat label="Iron" val={gameState.upgrades.autoMiners} />
-                    <ProductionStat label="Plasma" val={gameState.upgrades.plasmaExtractors * 0.5} />
-                    <ProductionStat label="Data" val={gameState.upgrades.researchHubs * 0.2} />
+                    <ProductionStat label="Plasma" val={gameState.upgrades.plasmaExtractors * 0.5 * (activeEvent?.effect === 'plasma_boost' ? 2 : 1)} />
+                    <ProductionStat label="Data" val={gameState.upgrades.researchHubs * 0.2 * (activeEvent?.effect === 'research_surge' ? 3 : 1)} />
                   </div>
                 </div>
               )}
@@ -441,6 +705,104 @@ const App = () => {
                   <ShopItem title="Plasma Collector" lvl={gameState.upgrades.plasmaExtractors} cost={UPGRADE_COSTS.plasmaExtractors(gameState.upgrades.plasmaExtractors)} canBuy={gameState.credits >= UPGRADE_COSTS.plasmaExtractors(gameState.upgrades.plasmaExtractors)} onBuy={() => buyUpgrade('plasmaExtractors')} icon={<Zap className="text-purple-400" />} />
                   <ShopItem title="Research Node" lvl={gameState.upgrades.researchHubs} cost={UPGRADE_COSTS.researchHubs(gameState.upgrades.researchHubs)} canBuy={gameState.credits >= UPGRADE_COSTS.researchHubs(gameState.upgrades.researchHubs)} onBuy={() => buyUpgrade('researchHubs')} icon={<Binary className="text-blue-400" />} />
                   <ShopItem title="Cargo Terminal" lvl={gameState.upgrades.storageLevel} cost={UPGRADE_COSTS.storage(gameState.upgrades.storageLevel)} canBuy={gameState.credits >= UPGRADE_COSTS.storage(gameState.upgrades.storageLevel)} onBuy={() => buyUpgrade('storageLevel')} icon={<Database className="text-orange-400" />} />
+                </div>
+              )}
+
+              {activeTab === 'trade' && (
+                <div className="flex flex-col gap-6 animate-in fade-in duration-500">
+                  <div className="glass p-6 rounded-3xl border border-cyan-500/20 bg-cyan-500/5">
+                    <h2 className="orbitron text-sm font-black text-cyan-400 mb-6 flex items-center gap-2">
+                      <PlusCircle size={16} /> CREATE GLOBAL LISTING
+                    </h2>
+                    <form onSubmit={handlePostTrade} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                      <div className="flex flex-col gap-2">
+                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest">RESOURCE</label>
+                        <select 
+                          value={p2pForm.resource} 
+                          onChange={e => setP2pForm(p => ({...p, resource: e.target.value as any}))}
+                          className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm"
+                        >
+                          <option value="iron">Iron</option>
+                          <option value="plasma">Plasma</option>
+                          <option value="crystal">Crystal</option>
+                        </select>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest">AMOUNT</label>
+                        <input 
+                          type="number" 
+                          placeholder="Amount" 
+                          value={p2pForm.amount || ''} 
+                          onChange={e => setP2pForm(p => ({...p, amount: Number(e.target.value)}))}
+                          className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest">TOTAL PRICE (CR)</label>
+                        <input 
+                          type="number" 
+                          placeholder="Price" 
+                          value={p2pForm.price || ''} 
+                          onChange={e => setP2pForm(p => ({...p, price: Number(e.target.value)}))}
+                          className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm"
+                        />
+                      </div>
+                      <button className="bg-cyan-600 hover:bg-cyan-500 text-white font-black orbitron text-[11px] h-[46px] rounded-xl shadow-lg transition-all active:scale-95">
+                        LIST OFFER
+                      </button>
+                    </form>
+                  </div>
+
+                  <div className="glass p-6 rounded-3xl border border-white/5">
+                    <h2 className="orbitron text-sm font-black text-slate-100 mb-6 flex items-center gap-2">
+                      <Globe size={16} className="text-cyan-400" /> GLOBAL MARKET BOARD
+                    </h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {marketListings.length === 0 ? (
+                        <div className="col-span-full text-center py-20 text-slate-600 font-mono text-xs uppercase">No active listings in sector.</div>
+                      ) : marketListings.map(listing => (
+                        <div key={listing.id} className={`p-5 rounded-2xl border transition-all ${listing.seller_id === currentUser.id ? 'bg-cyan-500/10 border-cyan-500/20' : 'bg-slate-900/50 border-white/5'}`}>
+                          <div className="flex justify-between items-start mb-4">
+                            <div className="flex items-center gap-3">
+                              <div className="p-2 bg-slate-950 rounded-lg text-cyan-400">
+                                {listing.resource_type === 'iron' ? <Database size={16} /> : listing.resource_type === 'plasma' ? <Zap size={16} /> : <Rocket size={16} />}
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-[10px] font-black orbitron uppercase">{listing.resource_type}</span>
+                                <span className="text-[8px] font-mono text-slate-500">Pilot: {listing.seller_id}</span>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-mono text-slate-600">
+                              {new Date(listing.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                          
+                          <div className="flex justify-between items-end">
+                            <div>
+                              <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-1">OFFER</span>
+                              <span className="orbitron text-lg font-bold text-white">{listing.amount.toLocaleString()}</span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-1">PRICE</span>
+                              <span className="orbitron text-lg font-bold text-yellow-500">{listing.price.toLocaleString()} <span className="text-[10px]">CR</span></span>
+                            </div>
+                          </div>
+
+                          <div className="mt-4 pt-4 border-t border-white/5">
+                            {listing.seller_id === currentUser.id ? (
+                              <button onClick={() => handleCancelListing(listing)} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2">
+                                <XCircle size={14} /> CANCEL LISTING
+                              </button>
+                            ) : (
+                              <button onClick={() => handleBuyListing(listing)} disabled={gameState.credits < listing.price} className={`w-full py-3 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2 transition-all ${gameState.credits >= listing.price ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
+                                <ShoppingBag size={14} /> ACCEPT OFFER
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -458,6 +820,31 @@ const App = () => {
                   <MarketCard resource="iron" data={gameState.market.iron} amount={gameState.resources.iron} onSell={() => sellResource('iron')} icon={<Database />} tax={taxRate} showDemand={gameState.technologies.marketAI > 0} />
                   <MarketCard resource="plasma" data={gameState.market.plasma} amount={gameState.resources.plasma} onSell={() => sellResource('plasma')} icon={<Zap />} tax={taxRate} showDemand={gameState.technologies.marketAI > 0} />
                   <MarketCard resource="crystal" data={gameState.market.crystal} amount={gameState.resources.crystal} onSell={() => sellResource('crystal')} icon={<Rocket />} tax={taxRate} showDemand={gameState.technologies.marketAI > 0} />
+                </div>
+              )}
+
+              {activeTab === 'social' && (
+                <div className="glass rounded-3xl p-8 border border-white/5 animate-in fade-in duration-500">
+                   <div className="flex items-center gap-4 mb-8">
+                     <Trophy size={32} className="text-yellow-400" />
+                     <h2 className="orbitron text-xl font-black italic">GLOBAL LEADERBOARD</h2>
+                   </div>
+                   <div className="space-y-4">
+                      {(leaderboard || []).length === 0 ? (
+                        <div className="text-center py-10 text-slate-500 font-mono">ESTABLISHING CONNECTION TO PERSISTENCE GRID...</div>
+                      ) : (leaderboard || []).map((entry, idx) => (
+                        <div key={entry.id} className={`flex items-center justify-between p-4 rounded-2xl border ${entry.id === currentUser.id ? 'bg-cyan-500/10 border-cyan-500/30' : 'bg-slate-900/50 border-white/5'}`}>
+                           <div className="flex items-center gap-4">
+                             <span className="orbitron text-xs font-black text-slate-500">#{idx + 1}</span>
+                             <div className="flex flex-col">
+                               <span className="orbitron text-sm font-bold text-white uppercase">{entry.id} {entry.id === currentUser.id && <span className="text-[10px] text-cyan-400">(YOU)</span>}</span>
+                               <span className="text-[8px] font-mono text-slate-500">PILOT CERTIFIED</span>
+                             </div>
+                           </div>
+                           <span className="orbitron font-black text-yellow-500">{Math.floor(entry.credits || 0).toLocaleString()} <span className="text-[9px]">CR</span></span>
+                        </div>
+                      ))}
+                   </div>
                 </div>
               )}
             </div>
@@ -479,7 +866,7 @@ const ResourceCard = ({ icon, label, val, color, limit }: any) => (
     <div className="flex flex-col">
       <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">{label}</span>
       <span className={`orbitron text-xs font-bold ${color}`}>
-        {Math.floor(val).toLocaleString()}
+        {Math.floor(val || 0).toLocaleString()}
         {limit && <span className="text-[9px] text-slate-700 font-normal"> / {limit.toLocaleString()}</span>}
       </span>
     </div>
@@ -489,12 +876,12 @@ const ResourceCard = ({ icon, label, val, color, limit }: any) => (
 const ProductionStat = ({ label, val }: any) => (
   <div className="flex flex-col">
     <span className="text-[9px] text-slate-600 uppercase font-bold mb-1 tracking-tighter">{label} / sec</span>
-    <span className="orbitron text-lg font-black text-white">+{val.toFixed(1)}</span>
+    <span className="orbitron text-lg font-black text-white">+{(val || 0).toFixed(1)}</span>
   </div>
 );
 
 const NavBtn = ({ active, onClick, icon, label }: any) => (
-  <button onClick={onClick} className={`flex items-center gap-2 px-6 py-3 rounded-xl transition-all orbitron text-[10px] font-black ${active ? 'bg-cyan-600 text-white shadow-xl shadow-cyan-900/20' : 'text-slate-500 hover:text-slate-300'}`}>
+  <button onClick={onClick} className={`flex items-center gap-2 px-6 py-3 rounded-xl transition-all orbitron text-[10px] font-black shrink-0 ${active ? 'bg-cyan-600 text-white shadow-xl shadow-cyan-900/20' : 'text-slate-500 hover:text-slate-300'}`}>
     {React.cloneElement(icon, { size: 14 })}
     {label.toUpperCase()}
   </button>
@@ -508,7 +895,7 @@ const ShopItem = ({ title, lvl, cost, canBuy, onBuy, icon }: any) => (
     </div>
     <h4 className="font-bold text-slate-200 text-sm">{title}</h4>
     <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl font-black orbitron text-[10px] transition-all ${canBuy ? 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg shadow-cyan-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
-      UPGRADE: {cost.toLocaleString()} CR
+      UPGRADE: {(cost || 0).toLocaleString()} CR
     </button>
   </div>
 );
@@ -524,7 +911,7 @@ const TechItem = ({ title, desc, lvl, cost, canBuy, onBuy, icon }: any) => (
       <p className="text-[10px] text-slate-500 leading-relaxed font-mono">{desc}</p>
     </div>
     <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl font-black orbitron text-[10px] transition-all ${canBuy ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
-      RESEARCH: {cost.toLocaleString()} BITS
+      RESEARCH: {(cost || 0).toLocaleString()} BITS
     </button>
   </div>
 );
@@ -540,25 +927,25 @@ const MarketCard = ({ resource, data, amount, onSell, icon, tax, showDemand }: a
         <div className="flex flex-col">
           <span className="text-[9px] text-slate-500 uppercase font-black">Price / Unit</span>
           <div className="flex items-center gap-2">
-            <span className={`orbitron text-xl font-black ${data.trend === 'up' ? 'text-green-400' : data.trend === 'down' ? 'text-red-400' : 'text-yellow-500'}`}>
-              {data.price} <span className="text-[10px]">CR</span>
+            <span className={`orbitron text-xl font-black ${data?.trend === 'up' ? 'text-green-400' : data?.trend === 'down' ? 'text-red-400' : 'text-yellow-500'}`}>
+              {data?.price || 0} <span className="text-[10px]">CR</span>
             </span>
-            {data.trend === 'up' ? <TrendingUp size={16} className="text-green-400" /> : <TrendingDown size={16} className="text-red-400" />}
+            {data?.trend === 'up' ? <TrendingUp size={16} className="text-green-400" /> : <TrendingDown size={16} className="text-red-400" />}
           </div>
         </div>
         <div className="text-right">
           <span className="text-[9px] text-slate-500 uppercase font-black">Holdings</span>
-          <p className="orbitron font-bold text-white text-sm">{Math.floor(amount).toLocaleString()}</p>
+          <p className="orbitron font-bold text-white text-sm">{Math.floor(amount || 0).toLocaleString()}</p>
         </div>
       </div>
       {showDemand && (
         <div className="space-y-1">
           <div className="flex justify-between text-[9px] font-mono text-slate-400">
             <span>MARKET DEMAND</span>
-            <span>{Math.floor(data.demand)}%</span>
+            <span>{Math.floor(data?.demand || 50)}%</span>
           </div>
           <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
-            <div className="h-full bg-cyan-400 transition-all duration-1000" style={{ width: `${data.demand}%` }} />
+            <div className="h-full bg-cyan-400 transition-all duration-1000" style={{ width: `${data?.demand || 50}%` }} />
           </div>
         </div>
       )}
@@ -566,9 +953,9 @@ const MarketCard = ({ resource, data, amount, onSell, icon, tax, showDemand }: a
     <div className="pt-4 border-t border-white/5">
       <div className="flex justify-between text-[10px] font-mono mb-4 text-slate-500">
         <span>EST. NET REVENUE:</span>
-        <span className="text-green-400 font-black">+{(amount * data.price * (1-tax)).toFixed(0)} CR</span>
+        <span className="text-green-400 font-black">+{((amount || 0) * (data?.price || 0) * (1-tax)).toFixed(0)} CR</span>
       </div>
-      <button onClick={onSell} disabled={amount <= 0} className={`w-full py-4 rounded-2xl font-black orbitron text-[11px] transition-all ${amount > 0 ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
+      <button onClick={onSell} disabled={!amount || amount <= 0} className={`w-full py-4 rounded-2xl font-black orbitron text-[11px] transition-all ${amount > 0 ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
         SELL ALL CARGO
       </button>
       <p className="text-[8px] text-center mt-2 text-slate-600 font-mono uppercase tracking-widest italic">Includes {(tax*100).toFixed(0)}% Galactic Tax</p>
