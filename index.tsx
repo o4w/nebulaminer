@@ -65,7 +65,10 @@ import {
   Waves,
   Zap as PowerIcon,
   FastForward,
-  ShieldAlert
+  ShieldAlert,
+  Fingerprint,
+  Medal,
+  Terminal
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenAI } from "@google/genai";
@@ -115,6 +118,17 @@ interface GameState {
   threatLevel: number; 
   lastUpdate: number;
   market: { [key: string]: { price: number; prevPrice: number; trend: 'up' | 'down' | 'stable' } };
+  profile?: {
+    callsign: string;
+    motto: string;
+    avatarId: string;
+    joinedDate: number;
+  };
+  stats?: {
+    totalCreditsEarned: number;
+    totalShipsBuilt: number;
+    sectorsLiberated: number;
+  };
 }
 
 interface UserData {
@@ -167,6 +181,17 @@ const INITIAL_GAME_STATE: GameState = {
     plasma: { price: 15, prevPrice: 15, trend: 'stable' },
     crystal: { price: 50, prevPrice: 50, trend: 'stable' },
     darkMatter: { price: 500, prevPrice: 500, trend: 'stable' }
+  },
+  profile: {
+    callsign: 'Bilinmeyen Amiral',
+    motto: 'Yıldızlar rehberimiz olsun.',
+    avatarId: 'shield',
+    joinedDate: Date.now()
+  },
+  stats: {
+    totalCreditsEarned: 0,
+    totalShipsBuilt: 0,
+    sectorsLiberated: 0
   }
 };
 
@@ -206,23 +231,21 @@ const getMaxStorage = (level: number) => 5000 * level;
 const getStorageUpgradeCost = (level: number) => Math.floor(2500 * Math.pow(1.8, level - 1));
 const getAutoMinerCost = (level: number) => Math.floor(500 * Math.pow(1.5, level));
 const getPlasmaExtractorCost = (level: number) => Math.floor(2000 * Math.pow(1.7, level));
-const getPlasmaExtractorCreditsCost = (level: number) => Math.floor(2000 * Math.pow(1.7, level));
 const getCrystalRefineryCost = (level: number) => Math.floor(5000 * Math.pow(2.0, level));
 
 // --- Ana Uygulama ---
 const App = () => {
   const [currentUser, setCurrentUser] = useState<UserData | null>(null);
   const [gameState, setGameState] = useState<GameState>(INITIAL_GAME_STATE);
-  const [activeTab, setActiveTab] = useState<'command' | 'shipyard' | 'starmap' | 'market' | 'ai' | 'diplomacy'>('command');
+  const [activeTab, setActiveTab] = useState<'command' | 'shipyard' | 'starmap' | 'market' | 'ai' | 'profile'>('command');
   const [aiAdvice, setAiAdvice] = useState<string>('');
   const [aiLoading, setAiLoading] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [authLoading, setAuthLoading] = useState(false);
-  const [trades, setTrades] = useState<TradeProposal[]>([]);
-  const [targetPilotId, setTargetPilotId] = useState('');
-  const [tradeOffer, setTradeOffer] = useState({ credits: 0, iron: 0, plasma: 0 });
-  const [tradeRequest, setTradeRequest] = useState({ credits: 0, iron: 0, plasma: 0 });
-  const [isTrading, setIsTrading] = useState(false);
+  
+  // Profil düzenleme durumları
+  const [tempProfile, setTempProfile] = useState(INITIAL_GAME_STATE.profile!);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
 
   useEffect(() => {
     const savedId = localStorage.getItem('nebula_pilot_id');
@@ -236,7 +259,15 @@ const App = () => {
         const existing = user.gameState.sectors?.find(es => es.id === s.id);
         return existing ? { ...s, controlled: existing.controlled, deployedShips: existing.deployedShips || { miner: 0, defender: 0, hauler: 0, scout: 0, cruiser: 0, mothership: 0 } } : s;
     });
-    setGameState({ ...INITIAL_GAME_STATE, ...user.gameState, sectors: mergedSectors });
+    const loadedState = { 
+        ...INITIAL_GAME_STATE, 
+        ...user.gameState, 
+        sectors: mergedSectors,
+        profile: { ...INITIAL_GAME_STATE.profile, ...(user.gameState.profile || {}) },
+        stats: { ...INITIAL_GAME_STATE.stats, ...(user.gameState.stats || {}) }
+    };
+    setGameState(loadedState);
+    setTempProfile(loadedState.profile!);
   };
 
   const handleAuth = async () => {
@@ -273,6 +304,33 @@ const App = () => {
     });
   }, []);
 
+  // --- Geliştirme İşlemleri (Fix: Implement missing handleUpgrade function) ---
+  const handleUpgrade = (type: 'storage' | 'autoMiner') => {
+    setGameState(prev => {
+      let cost = 0;
+      const nextUpgrades = { ...prev.upgrades };
+      
+      if (type === 'storage') {
+        cost = getStorageUpgradeCost(prev.upgrades.storageLevel);
+        if (prev.credits < cost) return prev;
+        nextUpgrades.storageLevel += 1;
+      } else if (type === 'autoMiner') {
+        cost = getAutoMinerCost(prev.upgrades.autoMiners);
+        if (prev.credits < cost) return prev;
+        nextUpgrades.autoMiners += 1;
+      } else {
+        return prev;
+      }
+      
+      return {
+        ...prev,
+        credits: prev.credits - cost,
+        upgrades: nextUpgrades
+      };
+    });
+    addXP(100);
+  };
+
   // --- Oyun Çekirdek Döngüsü ---
   useEffect(() => {
     if (!currentUser) return;
@@ -281,22 +339,17 @@ const App = () => {
         const delta = 1;
         const maxCap = getMaxStorage(prev.upgrades.storageLevel);
         
-        // Madenci gemileri artık sadece genel değil, sektör bazlı da çalışıyor
         const globalMinerPower = (prev.fleet.miner || 0) * 2;
-        
-        // Sektörlerdeki gemilerin hesaplanması
         const sectorBonuses = prev.sectors
           .filter(s => s.controlled)
           .reduce((acc, s) => {
               const sectorMiners = s.deployedShips?.miner || 0;
               const sectorHaulers = s.deployedShips?.hauler || 0;
               const sectorMotherships = s.deployedShips?.mothership || 0;
-              // Hauler'lar sektör verimini %20 artırır, Mothership'ler %50 ek bonus verir
               const efficiency = 1 + (sectorHaulers * 0.2) + (sectorMotherships * 0.5);
               return acc + (s.resourceMultiplier * (sectorMiners * 3 + 1) * efficiency);
           }, 0);
 
-        // Savunma gücü hesaplaması
         const cruiserPower = (prev.fleet.cruiser || 0) * 80;
         const mothershipPower = (prev.fleet.mothership || 0) * 500;
         const defensePower = (prev.fleet.defender || 0) * 10 + cruiserPower + mothershipPower;
@@ -339,12 +392,9 @@ const App = () => {
     setGameState(prev => {
         const sector = prev.sectors.find(s => s.id === sectorId);
         if (!sector || !sector.controlled) return prev;
-        
         const availableInFleet = prev.fleet[shipType] || 0;
         const toMove = Math.min(availableInFleet, amount);
-        
         if (toMove <= 0) return prev;
-
         return {
             ...prev,
             fleet: { ...prev.fleet, [shipType]: availableInFleet - toMove },
@@ -363,12 +413,9 @@ const App = () => {
     setGameState(prev => {
         const sector = prev.sectors.find(s => s.id === sectorId);
         if (!sector) return prev;
-        
         const inSector = sector.deployedShips?.[shipType] || 0;
         const toMove = Math.min(inSector, amount);
-        
         if (toMove <= 0) return prev;
-
         return {
             ...prev,
             fleet: { ...prev.fleet, [shipType]: (prev.fleet[shipType] || 0) + toMove },
@@ -386,16 +433,11 @@ const App = () => {
   const handleCaptureSector = (sectorId: string) => {
     const sector = gameState.sectors.find(s => s.id === sectorId)!;
     if (gameState.level < sector.minLevel) return alert(`Seviye ${sector.minLevel} gereklidir.`);
-    
-    // Güç puanı üzerinden fetih hesaplaması
     const cruiserPower = (gameState.fleet.cruiser || 0) * 80;
     const mothershipPower = (gameState.fleet.mothership || 0) * 500;
     const totalPower = (gameState.fleet.defender || 0) * 10 + cruiserPower + mothershipPower;
-
     const requiredPower = sector.risk * 15;
-    
     if (totalPower >= requiredPower) {
-        // Zayiat hesaplama
         const lossRatio = Math.max(0.05, (requiredPower / totalPower) * 0.4);
         setGameState(prev => ({
             ...prev,
@@ -405,12 +447,16 @@ const App = () => {
                 cruiser: Math.floor((prev.fleet.cruiser || 0) * (1 - (lossRatio * 0.5))),
                 mothership: Math.floor((prev.fleet.mothership || 0) * (1 - (lossRatio * 0.1)))
             },
-            sectors: prev.sectors.map(s => s.id === sectorId ? { ...s, controlled: true } : s)
+            sectors: prev.sectors.map(s => s.id === sectorId ? { ...s, controlled: true } : s),
+            stats: {
+                ...prev.stats!,
+                sectorsLiberated: (prev.stats?.sectorsLiberated || 0) + 1
+            }
         }));
         addXP(8000 * sector.resourceMultiplier);
-        alert(`${sector.name} ele geçirildi! Donanmada bazı kayıplar yaşandı ancak kontrol sağlandı.`);
+        alert(`${sector.name} ele geçirildi!`);
     } else {
-        alert(`Sektör savunması çok güçlü! Gerekli Güç: ${requiredPower}, Mevcut Güç: ${totalPower}`);
+        alert(`Gerekli Güç: ${requiredPower}, Mevcut Güç: ${totalPower}`);
     }
   };
 
@@ -429,35 +475,15 @@ const App = () => {
           plasma: prev.resources.plasma - ship.cost.plasma,
           crystal: prev.resources.crystal - ship.cost.crystal
         },
-        fleet: { ...prev.fleet, [shipId]: (prev.fleet[shipId] || 0) + 1 }
+        fleet: { ...prev.fleet, [shipId]: (prev.fleet[shipId] || 0) + 1 },
+        stats: {
+            ...prev.stats!,
+            totalShipsBuilt: (prev.stats?.totalShipsBuilt || 0) + 1
+        }
       }));
       addXP(Math.floor(ship.cost.credits / 10));
     } else {
         alert("Yetersiz kaynak!");
-    }
-  };
-
-  const handleUpgrade = (type: string) => {
-    const costs: any = {
-        storage: getStorageUpgradeCost(gameState.upgrades.storageLevel),
-        autoMiner: getAutoMinerCost(gameState.upgrades.autoMiners),
-        plasma: getPlasmaExtractorCost(gameState.upgrades.plasmaExtractors),
-        crystal: getCrystalRefineryCost(gameState.upgrades.crystalRefineries)
-    };
-    const cost = costs[type];
-    if (gameState.credits >= cost) {
-        setGameState(prev => ({
-            ...prev,
-            credits: prev.credits - cost,
-            upgrades: {
-                ...prev.upgrades,
-                storageLevel: type === 'storage' ? prev.upgrades.storageLevel + 1 : prev.upgrades.storageLevel,
-                autoMiners: type === 'autoMiner' ? prev.upgrades.autoMiners + 1 : prev.upgrades.autoMiners,
-                plasmaExtractors: type === 'plasma' ? prev.upgrades.plasmaExtractors + 1 : prev.upgrades.plasmaExtractors,
-                crystalRefineries: type === 'crystal' ? prev.upgrades.crystalRefineries + 1 : prev.upgrades.crystalRefineries,
-            }
-        }));
-        addXP(Math.floor(cost / 10));
     }
   };
 
@@ -468,9 +494,23 @@ const App = () => {
     setGameState(prev => ({
       ...prev,
       credits: prev.credits + creditsEarned,
-      resources: { ...prev.resources, [key]: 0 }
+      resources: { ...prev.resources, [key]: 0 },
+      stats: {
+          ...prev.stats!,
+          totalCreditsEarned: (prev.stats?.totalCreditsEarned || 0) + creditsEarned
+      }
     }));
     addXP(Math.floor(creditsEarned / 10));
+  };
+
+  const handleSaveProfile = async () => {
+    if (!currentUser) return;
+    setIsSavingProfile(true);
+    const updatedState = { ...gameState, profile: tempProfile };
+    setGameState(updatedState);
+    await DBService.updateGameState(currentUser.id, updatedState);
+    setIsSavingProfile(false);
+    alert("Pilot profili güncellendi.");
   };
 
   const getStrategicAdvice = async () => {
@@ -479,7 +519,7 @@ const App = () => {
     try {
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: `Amiral Nebula olarak davran. Rütbe: ${gameState.level}. Filo: ${JSON.stringify(gameState.fleet)}. Tehdit: %${gameState.threatLevel}. Kredi: ${gameState.credits}. Türkçe, sert ve otoriter bir tonda 2 cümlelik askeri emir ver. Tersane genişletildi, yeni kruvazörler ve ana gemiler hakkında yorum yapabilirsin.`,
+        contents: `Amiral ${gameState.profile?.callsign} olarak davran. Rütbe: ${gameState.level}. Filo: ${JSON.stringify(gameState.fleet)}. Tehdit: %${gameState.threatLevel}. Kredi: ${gameState.credits}. Türkçe, sert ve otoriter bir tonda 2 cümlelik askeri emir ver.`,
       });
       setAiAdvice(response.text || "Sektör taranıyor...");
     } catch (e) { setAiAdvice("İletişim koptu."); }
@@ -520,17 +560,20 @@ const App = () => {
              <div className="h-full bg-cyan-500 transition-all duration-500" style={{ width: `${xpProgress}%` }} />
           </div>
           <div className="flex items-center gap-6">
-            <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg border-2 border-white/10">
-                <Shield className="text-white w-8 h-8" />
+            <div className="w-16 h-16 bg-gradient-to-br from-cyan-600 to-blue-700 rounded-2xl flex items-center justify-center shadow-lg border-2 border-white/10 text-white">
+                <ShipIcon type={gameState.profile?.avatarId as any || 'shield'} size={32} />
             </div>
             <div className="text-left">
-                <h1 className="orbitron text-xl font-black uppercase tracking-tighter italic">Amiral <span className="text-cyan-400">{currentUser.id}</span></h1>
-                <p className="text-[10px] font-mono text-slate-500 uppercase">Seviye {gameState.level} | Tehdit: %{gameState.threatLevel.toFixed(1)}</p>
+                <h1 className="orbitron text-xl font-black uppercase tracking-tighter italic">
+                    <span className="text-slate-400 text-xs font-mono mr-2">[{currentUser.id}]</span>
+                    {gameState.profile?.callsign}
+                </h1>
+                <p className="text-[10px] font-mono text-cyan-400 uppercase">Amiral Seviyesi {gameState.level} | Tehdit: %{gameState.threatLevel.toFixed(1)}</p>
             </div>
           </div>
           <div className="flex gap-4">
              <div className="bg-slate-900/80 px-8 py-4 rounded-3xl border border-yellow-500/20 text-right">
-                <p className="text-[10px] font-black text-yellow-600 uppercase mb-1">Kredi</p>
+                <p className="text-[10px] font-black text-yellow-600 uppercase mb-1">Kredi Bakiyesi</p>
                 <p className="orbitron text-2xl font-bold text-yellow-400">{Math.floor(gameState.credits).toLocaleString()}</p>
              </div>
              <button onClick={() => { localStorage.removeItem('nebula_pilot_id'); window.location.reload(); }} className="p-5 bg-slate-800 text-slate-400 rounded-2xl hover:text-red-400 transition-all">
@@ -544,8 +587,8 @@ const App = () => {
            <QuickStat icon={<Database />} label="Demir" val={gameState.resources.iron} max={currentMaxStorage} color="text-slate-400" />
            <QuickStat icon={<Zap />} label="Plazma" val={gameState.resources.plasma} max={currentMaxStorage} color="text-purple-400" />
            <QuickStat icon={<Gem />} label="Kristal" val={gameState.resources.crystal} max={currentMaxStorage} color="text-emerald-400" />
-           <QuickStat icon={<Rocket />} label="Filo" val={(Object.values(gameState.fleet) as number[]).reduce((a, b) => a + b, 0)} color="text-cyan-400" />
-           <QuickStat icon={<Crosshair />} label="Sektörler" val={gameState.sectors.filter(s => s.controlled).length} color="text-green-400" />
+           <QuickStat icon={<Rocket />} label="Donanma" val={(Object.values(gameState.fleet) as number[]).reduce((a, b) => a + b, 0)} color="text-cyan-400" />
+           <QuickStat icon={<Crosshair />} label="Hakimiyet" val={gameState.sectors.filter(s => s.controlled).length} color="text-green-400" />
         </div>
 
         {/* Navigasyon */}
@@ -555,6 +598,7 @@ const App = () => {
            <NavBtn active={activeTab === 'starmap'} onClick={() => setActiveTab('starmap')} icon={<Radar />} label="Taktik Harita" />
            <NavBtn active={activeTab === 'market'} onClick={() => setActiveTab('market')} icon={<BarChart3 />} label="Ticaret" />
            <NavBtn active={activeTab === 'ai'} onClick={() => setActiveTab('ai')} icon={<Bot />} label="Amiral AI" />
+           <NavBtn active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} icon={<User />} label="Profil" />
         </nav>
 
         {/* İçerik */}
@@ -565,35 +609,118 @@ const App = () => {
                     <div className="glass rounded-[2.5rem] p-10 flex flex-col items-center justify-center border border-cyan-500/10 min-h-[400px] relative overflow-hidden">
                         <button onClick={() => { setGameState(prev => ({ ...prev, credits: prev.credits + 100 })); addXP(50); }} className="relative w-64 h-64 glass border-2 border-cyan-500/40 rounded-full flex flex-col items-center justify-center gap-4 hover:scale-105 transition-all shadow-2xl group">
                             <Target size={64} className="text-cyan-400 group-hover:animate-ping" />
-                            <span className="orbitron text-xs font-black uppercase">Komut Gönder</span>
+                            <span className="orbitron text-xs font-black uppercase tracking-widest">Sinyal Gönder</span>
                         </button>
                     </div>
                     <div className="glass rounded-[2.5rem] p-8 border border-white/5 bg-slate-900/20">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <UpgradeCard icon={<HardDrive />} title="Depo" level={gameState.upgrades.storageLevel} cost={getStorageUpgradeCost(gameState.upgrades.storageLevel)} canAfford={gameState.credits >= getStorageUpgradeCost(gameState.upgrades.storageLevel)} onUpgrade={() => handleUpgrade('storage')} color="cyan" />
-                            <UpgradeCard icon={<Pickaxe />} title="Madenci" level={gameState.upgrades.autoMiners} cost={getAutoMinerCost(gameState.upgrades.autoMiners)} canAfford={gameState.credits >= getAutoMinerCost(gameState.upgrades.autoMiners)} onUpgrade={() => handleUpgrade('autoMiner')} color="slate" />
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
+                            <UpgradeCard icon={<HardDrive />} title="Lojistik Depo" level={gameState.upgrades.storageLevel} cost={getStorageUpgradeCost(gameState.upgrades.storageLevel)} canAfford={gameState.credits >= getStorageUpgradeCost(gameState.upgrades.storageLevel)} onUpgrade={() => handleUpgrade('storage')} color="cyan" />
+                            <UpgradeCard icon={<Pickaxe />} title="Otonom Madenci" level={gameState.upgrades.autoMiners} cost={getAutoMinerCost(gameState.upgrades.autoMiners)} canAfford={gameState.credits >= getAutoMinerCost(gameState.upgrades.autoMiners)} onUpgrade={() => handleUpgrade('autoMiner')} color="slate" />
                         </div>
                     </div>
                 </div>
                 <div className="space-y-4">
-                   <h3 className="orbitron text-[10px] font-black text-slate-500 uppercase tracking-widest text-left">Ana Üs Filosu</h3>
+                   <h3 className="orbitron text-[10px] font-black text-slate-500 uppercase tracking-widest text-left">Aktif Rezervler</h3>
                    {Object.entries(gameState.fleet).map(([id, count]) => {
                      const shipInfo = SHIP_TYPES.find(s => s.id === id);
                      if (!shipInfo) return null;
                      return (
-                     <div key={id} className="glass p-6 rounded-2xl border border-white/5 flex items-center justify-between">
+                     <div key={id} className="glass p-6 rounded-2xl border border-white/5 flex items-center justify-between group hover:border-cyan-500/20 transition-all">
                         <div className="flex items-center gap-4">
                             <div className="p-3 bg-slate-950 rounded-xl border border-white/5 text-cyan-400">
                                 <ShipIcon type={shipInfo.type as any} />
                             </div>
                             <div className="text-left">
                                 <p className="orbitron text-[10px] font-black text-white">{shipInfo.name}</p>
-                                <p className="text-[8px] font-mono text-slate-500 uppercase">Hazır Kıta</p>
+                                <p className="text-[8px] font-mono text-slate-500 uppercase">Filo Birimi</p>
                             </div>
                         </div>
                         <span className="orbitron text-xl font-black text-cyan-400">{count}</span>
                      </div>
                    )})}
+                </div>
+             </div>
+           )}
+
+           {activeTab === 'profile' && (
+             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in slide-in-from-bottom-12 duration-500">
+                {/* Profil Düzenleme */}
+                <div className="glass p-10 rounded-[3rem] border border-cyan-500/20 text-left">
+                    <div className="flex items-center gap-4 mb-10">
+                        <Terminal className="text-cyan-400" size={32} />
+                        <h3 className="orbitron text-xl font-black text-white uppercase italic tracking-tighter">Pilot <span className="text-cyan-400">Kimlik Kartı</span></h3>
+                    </div>
+                    
+                    <div className="space-y-8">
+                        <div className="space-y-3">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Çağrı Adı (Callsign)</label>
+                            <input 
+                                type="text" 
+                                value={tempProfile.callsign} 
+                                onChange={(e) => setTempProfile({...tempProfile, callsign: e.target.value})}
+                                className="w-full bg-slate-950 border border-white/5 rounded-2xl px-6 py-4 text-sm font-mono text-cyan-50 focus:border-cyan-500 outline-none transition-all"
+                            />
+                        </div>
+
+                        <div className="space-y-3">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Amiral Mottosu</label>
+                            <textarea 
+                                value={tempProfile.motto} 
+                                onChange={(e) => setTempProfile({...tempProfile, motto: e.target.value})}
+                                className="w-full bg-slate-950 border border-white/5 rounded-2xl px-6 py-4 text-sm font-mono text-cyan-50 focus:border-cyan-500 outline-none transition-all h-24 resize-none"
+                            />
+                        </div>
+
+                        <div className="space-y-3">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Avatar Protokolü</label>
+                            <div className="grid grid-cols-5 gap-4">
+                                {['shield', 'zap', 'target', 'rocket', 'radar'].map(iconId => (
+                                    <button 
+                                        key={iconId}
+                                        onClick={() => setTempProfile({...tempProfile, avatarId: iconId})}
+                                        className={`p-4 rounded-xl border transition-all flex items-center justify-center ${tempProfile.avatarId === iconId ? 'bg-cyan-600 border-cyan-400 text-white shadow-[0_0_20px_rgba(6,182,212,0.4)]' : 'bg-slate-950 border-white/5 text-slate-500 hover:text-slate-300'}`}
+                                    >
+                                        <ShipIcon type={iconId as any} size={24} />
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <button 
+                            onClick={handleSaveProfile} 
+                            disabled={isSavingProfile}
+                            className="w-full py-5 rounded-2xl bg-cyan-600 hover:bg-cyan-500 text-white orbitron font-black text-xs uppercase tracking-widest flex items-center justify-center gap-3 shadow-2xl transition-all"
+                        >
+                            {isSavingProfile ? <Loader2 className="animate-spin" /> : <><Save size={18}/> Kimliği Güncelle</>}
+                        </button>
+                    </div>
+                </div>
+
+                {/* Başarılar ve İstatistikler */}
+                <div className="space-y-6">
+                    <div className="glass p-10 rounded-[3rem] border border-white/5 text-left relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-8 opacity-10">
+                            <Medal size={120} className="text-yellow-500" />
+                        </div>
+                        <h3 className="orbitron text-xs font-black text-slate-500 uppercase tracking-[0.4em] mb-8">Hizmet Kayıtları</h3>
+                        <div className="space-y-6">
+                            <StatDisplay label="Toplam Kazanılan Kredi" val={Math.floor(gameState.stats?.totalCreditsEarned || 0).toLocaleString()} icon={<Trophy className="text-yellow-500" />} />
+                            <StatDisplay label="İnşa Edilen Gemiler" val={(gameState.stats?.totalShipsBuilt || 0).toString()} icon={<Rocket className="text-cyan-500" />} />
+                            <StatDisplay label="Kurtarılan Sektörler" val={(gameState.stats?.sectorsLiberated || 0).toString()} icon={<Globe className="text-green-500" />} />
+                            <div className="pt-6 border-t border-white/5">
+                                <p className="text-[9px] font-mono text-slate-600 uppercase tracking-widest">Hizmete Giriş Tarihi</p>
+                                <p className="text-xs font-mono text-slate-400 mt-1">{new Date(gameState.profile?.joinedDate || Date.now()).toLocaleDateString('tr-TR', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="glass p-8 rounded-[2.5rem] border border-indigo-500/10 text-left bg-gradient-to-br from-indigo-900/10 to-transparent">
+                        <div className="flex items-center gap-4 mb-4">
+                            <ShieldCheck className="text-indigo-400" size={24} />
+                            <p className="orbitron text-[10px] font-black text-white uppercase tracking-widest">Galaktik İtibar</p>
+                        </div>
+                        <p className="text-[11px] font-mono text-slate-400 italic">"Amiral {gameState.profile?.callsign}, galaksi genelinde {gameState.level > 10 ? 'saygın bir stratejist' : 'yükselen bir lider'} olarak tanınıyor."</p>
+                    </div>
                 </div>
              </div>
            )}
@@ -713,14 +840,31 @@ const App = () => {
 
 // --- Alt Bileşenler ---
 
-const ShipIcon = ({ type, size = 18 }: { type: Ship['type'], size?: number }) => {
+const StatDisplay = ({ label, val, icon }: { label: string, val: string, icon: React.ReactNode }) => (
+    <div className="flex items-center gap-4">
+        <div className="w-10 h-10 bg-slate-950 rounded-xl border border-white/5 flex items-center justify-center">
+            {icon}
+        </div>
+        <div className="text-left">
+            <p className="text-[8px] font-black text-slate-600 uppercase tracking-widest">{label}</p>
+            <p className="orbitron text-sm font-black text-white">{val}</p>
+        </div>
+    </div>
+);
+
+const ShipIcon = ({ type, size = 18 }: { type: Ship['type'] | string, size?: number }) => {
     switch (type) {
         case 'scout': return <Radar size={size} />;
         case 'miner': return <Pickaxe size={size} />;
-        case 'defender': return <Shield size={size} />;
+        case 'defender': 
+        case 'shield': return <Shield size={size} />;
         case 'hauler': return <Box size={size} />;
         case 'cruiser': return <Sword size={size} />;
         case 'mothership': return <Waves size={size} />;
+        case 'zap': return <Zap size={size} />;
+        case 'target': return <Target size={size} />;
+        case 'rocket': return <Rocket size={size} />;
+        case 'radar': return <Radar size={size} />;
         default: return <Rocket size={size} />;
     }
 };
