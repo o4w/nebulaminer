@@ -335,8 +335,8 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
           <div className="w-20 h-20 bg-cyan-500/10 rounded-3xl mx-auto flex items-center justify-center border border-cyan-500/30 mb-6 rotate-3 hover:rotate-0 transition-transform">
             <Globe className="text-cyan-400 w-10 h-10 animate-pulse" />
           </div>
-          <h1 className="orbitron text-2xl font-black text-white tracking-tighter uppercase">Nebula OS v2.9.1</h1>
-          <p className="text-slate-500 text-xs mt-2 font-mono italic">Schema Sync Fix</p>
+          <h1 className="orbitron text-2xl font-black text-white tracking-tighter uppercase">Nebula Game v2.3</h1>
+          <p className="text-slate-500 text-xs mt-2 font-mono italic">Galaksinin İmparatoru Ol !</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <input required type="text" placeholder="Pilot ID" value={userId} onChange={e => setUserId(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none transition-all font-mono" />
