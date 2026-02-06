@@ -5,26 +5,28 @@ import {
   Pickaxe, 
   TrendingUp, 
   TrendingDown,
-  Minus,
-  Settings, 
-  Zap, 
-  ShoppingBag, 
-  Cpu, 
-  Database, 
-  Rocket,
-  AlertCircle,
-  User,
-  Lock,
   LogOut,
-  ShieldCheck,
   Binary,
   BarChart3,
   Microchip,
   Globe,
+  Target,
+  Database,
+  Zap,
+  Rocket,
+  ShoppingBag,
+  Cpu,
+  Settings,
   ArrowUpRight,
-  Target
+  RefreshCw
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
+import { createClient } from '@supabase/supabase-js';
+
+// --- Supabase Client Initialization ---
+const SUPABASE_URL = 'https://slfxijiowcbqzhzlnhhh.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_VJ4oUTpjq-KbKecplM7mog_RR2lhNCz';
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // --- Types ---
 interface ResourceState {
@@ -35,10 +37,10 @@ interface ResourceState {
 }
 
 interface TechState {
-  marketAI: number; // Shows next trend predictability
-  taxOptimization: number; // Reduces market tax
-  nanoStorage: number; // Multiplier for storage
-  neuralMining: number; // Bonus to manual click
+  marketAI: number;
+  taxOptimization: number;
+  nanoStorage: number;
+  neuralMining: number;
 }
 
 interface MarketState {
@@ -74,10 +76,10 @@ interface UserData {
 
 // --- Constants ---
 const BASE_MARKET_PRICES = { iron: 2, plasma: 15, crystal: 50 };
-const MARKET_TAX_BASE = 0.20; // 20% Base Tax
+const MARKET_TAX_BASE = 0.20;
 
 const INITIAL_GAME_STATE: GameState = {
-  credits: 100, // Starting capital
+  credits: 100,
   resources: { iron: 0, plasma: 0, crystal: 0, dataBits: 0 },
   upgrades: {
     pickaxePower: 1,
@@ -120,23 +122,26 @@ const TECH_COSTS = {
 const STORAGE_LIMITS = (level: number, techLevel: number) => 
   Math.floor((level * 1000) * (1 + (techLevel * 0.5)));
 
-// --- Firebase Simulation ---
-const FirebaseService = {
-  getUsers: (): Record<string, UserData> => {
-    const data = localStorage.getItem('nebula_db_v2');
-    return data ? JSON.parse(data) : {};
+// --- Database Service (Supabase) ---
+const DBService = {
+  getUser: async (userId: string): Promise<UserData | null> => {
+    const { data, error } = await supabase.from('users').select('*').eq('id', userId).single();
+    if (error || !data) return null;
+    return {
+      id: data.id,
+      password: data.password,
+      gameState: data.game_state
+    };
   },
-  saveUser: (user: UserData) => {
-    const users = FirebaseService.getUsers();
-    users[user.id] = user;
-    localStorage.setItem('nebula_db_v2', JSON.stringify(users));
+  saveUser: async (user: UserData) => {
+    await supabase.from('users').upsert({
+      id: user.id,
+      password: user.password,
+      game_state: user.gameState
+    });
   },
-  updateGameState: (userId: string, state: GameState) => {
-    const users = FirebaseService.getUsers();
-    if (users[userId]) {
-      users[userId].gameState = state;
-      localStorage.setItem('nebula_db_v2', JSON.stringify(users));
-    }
+  updateGameState: async (userId: string, state: GameState) => {
+    await supabase.from('users').update({ game_state: state }).eq('id', userId);
   }
 };
 
@@ -146,19 +151,34 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
   const [userId, setUserId] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const users = FirebaseService.getUsers();
-    if (isRegister) {
-      if (users[userId]) { setError('ID mevcut.'); return; }
-      const newUser = { id: userId, password, gameState: INITIAL_GAME_STATE };
-      FirebaseService.saveUser(newUser);
-      onLogin(newUser);
-    } else {
-      const u = users[userId];
-      if (u && u.password === password) onLogin(u);
-      else setError('Geçersiz kimlik.');
+    setLoading(true);
+    setError('');
+
+    try {
+      const user = await DBService.getUser(userId);
+      if (isRegister) {
+        if (user) {
+          setError('ID mevcut.');
+        } else {
+          const newUser = { id: userId, password, gameState: INITIAL_GAME_STATE };
+          await DBService.saveUser(newUser);
+          onLogin(newUser);
+        }
+      } else {
+        if (user && user.password === password) {
+          onLogin(user);
+        } else {
+          setError('Geçersiz kimlik.');
+        }
+      }
+    } catch (err) {
+      setError('Bağlantı hatası.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -170,14 +190,14 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
             <Globe className="text-cyan-400 w-10 h-10 animate-pulse" />
           </div>
           <h1 className="orbitron text-2xl font-black text-white tracking-tighter uppercase">Nebula OS v2.1</h1>
-          <p className="text-slate-500 text-xs mt-2 font-mono">Economic & Tech Simulation Node</p>
+          <p className="text-slate-500 text-xs mt-2 font-mono">Cloud-Synced Persistence Node</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <input required type="text" placeholder="Pilot ID" value={userId} onChange={e => setUserId(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none transition-all font-mono" />
           <input required type="password" placeholder="Access Code" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none transition-all font-mono" />
           {error && <p className="text-red-500 text-[10px] text-center font-bold uppercase tracking-widest">{error}</p>}
-          <button className="w-full bg-cyan-600 hover:bg-cyan-500 py-4 rounded-xl font-black orbitron text-white shadow-lg shadow-cyan-900/20 active:scale-95 transition-all">
-            {isRegister ? 'INITIALIZE CORE' : 'ESTABLISH LINK'}
+          <button disabled={loading} className="w-full bg-cyan-600 hover:bg-cyan-500 py-4 rounded-xl font-black orbitron text-white shadow-lg shadow-cyan-900/20 active:scale-95 transition-all flex items-center justify-center">
+            {loading ? <RefreshCw className="animate-spin" size={20} /> : (isRegister ? 'INITIALIZE CORE' : 'ESTABLISH LINK')}
           </button>
         </form>
         <button onClick={() => setIsRegister(!isRegister)} className="w-full mt-6 text-slate-500 text-xs hover:text-cyan-400 font-mono">
@@ -194,6 +214,7 @@ const App = () => {
   const [gameState, setGameState] = useState<GameState>(INITIAL_GAME_STATE);
   const [activeTab, setActiveTab] = useState<'mine' | 'shop' | 'tech' | 'market'>('mine');
   const [aiAdvice, setAiAdvice] = useState<string>("Ekonomik veriler analiz ediliyor...");
+  const [isSaving, setIsSaving] = useState(false);
 
   const taxRate = useMemo(() => 
     Math.max(0.05, MARKET_TAX_BASE - (gameState.technologies.taxOptimization * 0.03)), 
@@ -235,15 +256,11 @@ const App = () => {
         (Object.keys(BASE_MARKET_PRICES) as Array<keyof typeof BASE_MARKET_PRICES>).forEach(key => {
           const base = (BASE_MARKET_PRICES as any)[key];
           const current = prev.market[key].price;
-          
-          // Economic calculation with demand
           const demandFactor = 0.5 + (Math.random() * (prev.market[key].demand / 50));
           const nextPrice = Math.max(1, Math.round(base * demandFactor * (0.8 + Math.random() * 0.4) * 10) / 10);
-          
           let trend: 'up' | 'down' | 'stable' = 'stable';
           if (nextPrice > current) trend = 'up';
           else if (nextPrice < current) trend = 'down';
-
           newMarket[key] = { 
             price: nextPrice, 
             trend, 
@@ -256,13 +273,20 @@ const App = () => {
     return () => clearInterval(marketInterval);
   }, [currentUser]);
 
+  // Debounced Auto-Save to Supabase
   useEffect(() => {
-    if (currentUser) FirebaseService.updateGameState(currentUser.id, gameState);
+    if (currentUser) {
+      const saveTimeout = setTimeout(async () => {
+        setIsSaving(true);
+        await DBService.updateGameState(currentUser.id, gameState);
+        setIsSaving(false);
+      }, 5000);
+      return () => clearTimeout(saveTimeout);
+    }
   }, [gameState, currentUser]);
 
   if (!currentUser) return <AuthScreen onLogin={u => { setCurrentUser(u); setGameState(u.gameState); }} />;
 
-  // Actions
   const mineManual = () => {
     if (gameState.resources.iron < currentStorageLimit) {
       const power = gameState.upgrades.pickaxePower + (gameState.technologies.neuralMining * 2);
@@ -276,8 +300,7 @@ const App = () => {
   const sellResource = (type: keyof typeof BASE_MARKET_PRICES) => {
     const amount = (gameState.resources as any)[type];
     if (amount <= 0) return;
-    const rawProfit = amount * gameState.market[type].price;
-    const taxedProfit = rawProfit * (1 - taxRate);
+    const taxedProfit = amount * gameState.market[type].price * (1 - taxRate);
     setGameState(prev => ({
       ...prev,
       credits: prev.credits + taxedProfit,
@@ -309,7 +332,6 @@ const App = () => {
 
   const getAiStrategy = async () => {
     try {
-      // Fix: Follow @google/genai guidelines for model querying
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const prompt = `Sen Nebula Miner ekonomi danışmanısın. Vergi Oranı: %${(taxRate*100).toFixed(0)}, Kredi: ${gameState.credits}, Demir Talebi: ${gameState.market.iron.demand}. Oyuncuya kısa, teknolojik terimlerle dolu bir borsa taktiği ver.`;
       const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
@@ -320,9 +342,7 @@ const App = () => {
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 p-4 md:p-8 font-sans selection:bg-cyan-500/30">
       <div className="max-w-7xl mx-auto flex flex-col gap-6">
-        
-        {/* Navigation Header */}
-        <header className="glass rounded-3xl p-6 flex flex-col md:flex-row justify-between items-center gap-4 border border-white/5 shadow-2xl">
+        <header className="glass rounded-3xl p-6 flex flex-col md:flex-row justify-between items-center gap-4 border border-white/5 shadow-2xl relative">
           <div className="flex items-center gap-6">
             <div className="p-4 bg-gradient-to-br from-cyan-600 to-blue-700 rounded-2xl shadow-lg shadow-cyan-900/20">
               <BarChart3 className="w-8 h-8 text-white" />
@@ -330,7 +350,8 @@ const App = () => {
             <div>
               <h1 className="orbitron text-2xl font-black tracking-tight text-white uppercase italic">Nebula <span className="text-cyan-400">Trading Hub</span></h1>
               <p className="text-[10px] font-mono text-slate-500 tracking-[0.2em] flex items-center gap-2">
-                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" /> NETWORK STATUS: OPTIMAL | PILOT: {currentUser.id}
+                <span className={`w-2 h-2 ${isSaving ? 'bg-yellow-500 animate-pulse' : 'bg-green-500'} rounded-full`} /> 
+                {isSaving ? 'SYNCING...' : 'CLOUD SYNCED'} | PILOT: {currentUser.id}
               </p>
             </div>
           </div>
@@ -345,10 +366,8 @@ const App = () => {
           </div>
         </header>
 
-        {/* Global Economy Banner */}
         <section className="bg-cyan-950/20 border-y border-cyan-500/10 p-4 overflow-hidden relative">
           <div className="flex items-center gap-8 whitespace-nowrap animate-marquee">
-            {/* Fix: Explicitly cast Object.entries to handle 'unknown' type inference on index signature */}
             {(Object.entries(gameState.market) as [string, MarketState[string]][]).map(([key, val]) => (
               <div key={key} className="flex items-center gap-3 font-mono text-xs uppercase tracking-tighter">
                 <span className="text-slate-500">{key}:</span>
@@ -360,11 +379,10 @@ const App = () => {
                 </div>
               </div>
             ))}
-            <span className="text-slate-600 ml-10">| MARKET TAX: %{(taxRate*100).toFixed(1)} | SECTOR STABILITY: NOMINAL |</span>
+            <span className="text-slate-600 ml-10">| CLOUD CONNECTED | SECTOR STABILITY: NOMINAL |</span>
           </div>
         </section>
 
-        {/* AI Advisor Terminal */}
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           <aside className="lg:col-span-1 flex flex-col gap-6">
              <div className="glass rounded-3xl p-6 border border-purple-500/20 bg-purple-500/5 h-full">
@@ -381,9 +399,7 @@ const App = () => {
              </div>
           </aside>
 
-          {/* Main Dashboard */}
           <main className="lg:col-span-3 flex flex-col gap-6">
-            {/* Resources Bar */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                <ResourceCard icon={<Database />} label="Iron" val={gameState.resources.iron} color="text-slate-400" limit={currentStorageLimit} />
                <ResourceCard icon={<Zap />} label="Plasma" val={gameState.resources.plasma} color="text-purple-400" limit={currentStorageLimit} />
@@ -391,7 +407,6 @@ const App = () => {
                <ResourceCard icon={<Binary />} label="Data Bits" val={gameState.resources.dataBits} color="text-blue-400" />
             </div>
 
-            {/* Tab Selector */}
             <nav className="flex bg-slate-900/50 p-1 rounded-2xl self-start border border-white/5">
               <NavBtn active={activeTab === 'mine'} onClick={() => setActiveTab('mine')} icon={<Pickaxe />} label="Mine" />
               <NavBtn active={activeTab === 'shop'} onClick={() => setActiveTab('shop')} icon={<ShoppingBag />} label="Upgrades" />
@@ -399,7 +414,6 @@ const App = () => {
               <NavBtn active={activeTab === 'market'} onClick={() => setActiveTab('market')} icon={<BarChart3 />} label="Market" />
             </nav>
 
-            {/* Tab Panels */}
             <div className="flex-1">
               {activeTab === 'mine' && (
                 <div className="flex flex-col items-center justify-center min-h-[400px] animate-in fade-in zoom-in duration-500">
@@ -451,7 +465,7 @@ const App = () => {
         </div>
 
         <footer className="text-center py-12 border-t border-slate-900">
-           <p className="orbitron text-[9px] font-black text-slate-700 uppercase tracking-[0.5em]">Nebula Galactic Trading Protocol | v2.5-TECH_ECON</p>
+           <p className="orbitron text-[9px] font-black text-slate-700 uppercase tracking-[0.5em]">Nebula Galactic Trading Protocol | Cloud Persistence Active</p>
         </footer>
       </div>
     </div>
@@ -459,7 +473,6 @@ const App = () => {
 };
 
 // --- Subcomponents ---
-
 const ResourceCard = ({ icon, label, val, color, limit }: any) => (
   <div className="glass p-4 rounded-2xl border border-white/5 flex items-center gap-4 bg-slate-900/20">
     <div className={`p-3 bg-slate-950 rounded-xl shadow-inner ${color}`}>{React.cloneElement(icon, { size: 18 })}</div>
@@ -522,7 +535,6 @@ const MarketCard = ({ resource, data, amount, onSell, icon, tax, showDemand }: a
       <div className="p-3 bg-slate-950 rounded-2xl text-slate-400">{icon}</div>
       <span className="orbitron font-black text-slate-100 uppercase tracking-tighter">{resource}</span>
     </div>
-    
     <div className="space-y-4">
       <div className="flex justify-between items-end">
         <div className="flex flex-col">
@@ -539,7 +551,6 @@ const MarketCard = ({ resource, data, amount, onSell, icon, tax, showDemand }: a
           <p className="orbitron font-bold text-white text-sm">{Math.floor(amount).toLocaleString()}</p>
         </div>
       </div>
-
       {showDemand && (
         <div className="space-y-1">
           <div className="flex justify-between text-[9px] font-mono text-slate-400">
@@ -552,7 +563,6 @@ const MarketCard = ({ resource, data, amount, onSell, icon, tax, showDemand }: a
         </div>
       )}
     </div>
-
     <div className="pt-4 border-t border-white/5">
       <div className="flex justify-between text-[10px] font-mono mb-4 text-slate-500">
         <span>EST. NET REVENUE:</span>
