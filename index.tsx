@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { 
   Pickaxe, 
@@ -25,8 +25,7 @@ import {
   Users,
   PlusCircle,
   XCircle,
-  ArrowRightLeft,
-  CloudCheck
+  ArrowRightLeft
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -171,7 +170,10 @@ const STORAGE_LIMITS = (level: number, techLevel: number) =>
 const DBService = {
   getUser: async (userId: string): Promise<UserData | null> => {
     const { data, error } = await supabase.from('users').select('*').eq('id', userId).single();
-    if (error || !data) return null;
+    if (error) {
+      console.error("Supabase GetUser Error:", error);
+      return null;
+    }
     return {
       id: data.id,
       password: data.password,
@@ -179,14 +181,16 @@ const DBService = {
     };
   },
   saveUser: async (user: UserData) => {
-    await supabase.from('users').upsert({
+    const { error } = await supabase.from('users').upsert({
       id: user.id,
       password: user.password,
       game_state: user.gameState
     });
+    if (error) console.error("Supabase SaveUser Error:", error);
   },
   updateGameState: async (userId: string, state: GameState) => {
-    await supabase.from('users').update({ game_state: state }).eq('id', userId);
+    const { error } = await supabase.from('users').update({ game_state: state }).eq('id', userId);
+    if (error) console.error("Supabase UpdateGameState Error:", error);
   },
   getLeaderboard: async (): Promise<LeaderboardEntry[]> => {
     const { data, error } = await supabase
@@ -207,12 +211,14 @@ const DBService = {
     return data || [];
   },
   postListing: async (listing: Omit<MarketListing, 'id' | 'created_at'>) => {
-    await supabase.from('market_listings').insert(listing);
+    const { error } = await supabase.from('market_listings').insert(listing);
+    if (error) console.error("Supabase PostListing Error:", error);
   },
   cancelListing: async (listingId: string) => {
-    await supabase.from('market_listings').delete().eq('id', listingId);
+    const { error } = await supabase.from('market_listings').delete().eq('id', listingId);
+    if (error) console.error("Supabase CancelListing Error:", error);
   },
-  purchaseListing: async (listing: MarketListing, buyerId: string, buyerState: GameState) => {
+  purchaseListing: async (listing: MarketListing, buyerId: string) => {
     const seller = await DBService.getUser(listing.seller_id);
     if (!seller) throw new Error("Seller not found");
     const sellerState = seller.gameState;
@@ -289,6 +295,7 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
 const App = () => {
   const [currentUser, setCurrentUser] = useState<UserData | null>(null);
   const [gameState, setGameState] = useState<GameState>(INITIAL_GAME_STATE);
+  const gameStateRef = useRef(gameState); // Güncel state'i yakalamak için ref
   const [activeTab, setActiveTab] = useState<'mine' | 'shop' | 'tech' | 'market' | 'social' | 'trade'>('mine');
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState<string | null>(null);
@@ -296,6 +303,11 @@ const App = () => {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [marketListings, setMarketListings] = useState<MarketListing[]>([]);
   const [floatingTexts, setFloatingTexts] = useState<{ id: number, text: string, x: number, y: number }[]>([]);
+
+  // State değiştikçe ref'i güncelle
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
 
   // P2P Form State
   const [p2pForm, setP2pForm] = useState<{ resource: keyof typeof BASE_MARKET_PRICES, amount: number, price: number }>({
@@ -417,22 +429,25 @@ const App = () => {
 
   useEffect(() => {
     syncGlobalData();
-    const syncInterval = setInterval(syncGlobalData, 10000);
+    const syncInterval = setInterval(syncGlobalData, 15000);
     return () => clearInterval(syncInterval);
   }, [activeTab, syncGlobalData]);
 
-  // --- Auto-Save ---
+  // --- Auto-Save FIX ---
+  // Artık gameState her değiştiğinde sıfırlanmayan sabit bir periyotla çalışır.
   useEffect(() => {
-    if (currentUser) {
-      const saveTimeout = setTimeout(async () => {
-        setIsSaving(true);
-        await DBService.updateGameState(currentUser.id, gameState);
-        setIsSaving(false);
-        setLastSaved(new Date().toLocaleTimeString());
-      }, 5000);
-      return () => clearTimeout(saveTimeout);
-    }
-  }, [gameState, currentUser]);
+    if (!currentUser) return;
+    
+    const saveInterval = setInterval(async () => {
+      setIsSaving(true);
+      // gameStateRef.current kullanarak timer resetlenmeden güncel veriyi göndeririz.
+      await DBService.updateGameState(currentUser.id, gameStateRef.current);
+      setIsSaving(false);
+      setLastSaved(new Date().toLocaleTimeString());
+    }, 20000); // Her 20 saniyede bir kaydet
+    
+    return () => clearInterval(saveInterval);
+  }, [currentUser]);
 
   if (!currentUser) return <AuthScreen onLogin={u => { 
     setCurrentUser(u); 
@@ -510,11 +525,11 @@ const App = () => {
   const handleBuyListing = async (listing: MarketListing) => {
     if (gameState.credits < listing.price) return;
     if (gameState.resources[listing.resource_type] + listing.amount > currentStorageLimit) {
-      alert("Storage full! Upgrade cargo space.");
+      alert("Depo dolu! Kargo kapasitesini geliştir.");
       return;
     }
     try {
-      await DBService.purchaseListing(listing, currentUser.id, gameState);
+      await DBService.purchaseListing(listing, currentUser.id);
       setGameState(prev => ({
         ...prev,
         credits: prev.credits - listing.price,
@@ -522,7 +537,7 @@ const App = () => {
       }));
       syncGlobalData();
     } catch (err) {
-      alert("Trade failed: " + err);
+      alert("Ticaret başarısız: " + err);
     }
   };
 
@@ -556,7 +571,7 @@ const App = () => {
                   <span className={`w-2 h-2 ${isSaving ? 'bg-yellow-500 animate-pulse' : 'bg-green-500'} rounded-full`} /> 
                   {isSaving ? 'DATABASE SYNCING...' : 'DATABASE PERSISTENT'} | PILOT: {currentUser.id}
                 </p>
-                {lastSaved && <p className="text-[8px] text-slate-600">LAST SAVED TO CLOUD: {lastSaved}</p>}
+                {lastSaved && <p className="text-[8px] text-slate-600 uppercase">LAST CLOUD SYNC: {lastSaved}</p>}
               </div>
             </div>
           </div>
@@ -623,6 +638,21 @@ const App = () => {
                   ))}
                 </div>
              </div>
+             
+             <div className="glass rounded-3xl p-6 border border-cyan-500/10 text-center">
+                <p className="text-[9px] font-mono text-slate-500 uppercase mb-2">Manual Sync</p>
+                <button 
+                  onClick={async () => {
+                    setIsSaving(true);
+                    await DBService.updateGameState(currentUser.id, gameStateRef.current);
+                    setIsSaving(false);
+                    setLastSaved(new Date().toLocaleTimeString());
+                  }}
+                  className="w-full py-2 bg-slate-900 border border-slate-700 rounded-xl hover:bg-slate-800 transition-colors text-[10px] orbitron font-bold text-cyan-400"
+                >
+                  SAVE NOW
+                </button>
+             </div>
           </aside>
 
           <main className="lg:col-span-3 flex flex-col gap-6">
@@ -651,7 +681,7 @@ const App = () => {
                         <div className="absolute inset-0 border-[20px] border-t-cyan-500/20 border-r-transparent border-b-transparent border-l-transparent rounded-full animate-spin-slow" />
                         <Pickaxe size={48} className="text-cyan-400" />
                         <span className="orbitron text-sm font-black text-white tracking-widest">ASTEROID CORE</span>
-                        <span className="font-mono text-[10px] text-cyan-600">CORE FRAGMENTS DETECTED</span>
+                        <span className="font-mono text-[10px] text-cyan-600 uppercase tracking-widest">Fragments Detected</span>
                      </button>
                   </div>
                   <div className="grid grid-cols-3 gap-8 text-center">
@@ -675,8 +705,8 @@ const App = () => {
               {activeTab === 'trade' && (
                 <div className="flex flex-col gap-6 animate-in fade-in duration-500">
                   <div className="glass p-6 rounded-3xl border border-cyan-500/20 bg-cyan-500/5">
-                    <h2 className="orbitron text-sm font-black text-cyan-400 mb-6 flex items-center gap-2">
-                      <PlusCircle size={16} /> CREATE GLOBAL LISTING
+                    <h2 className="orbitron text-sm font-black text-cyan-400 mb-6 flex items-center gap-2 uppercase tracking-widest">
+                      <PlusCircle size={16} /> Create Trade Offer
                     </h2>
                     <form onSubmit={handlePostTrade} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
                       <div className="flex flex-col gap-2">
@@ -688,24 +718,24 @@ const App = () => {
                         </select>
                       </div>
                       <div className="flex flex-col gap-2">
-                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest">AMOUNT</label>
+                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest uppercase">Amount</label>
                         <input type="number" placeholder="Amount" value={p2pForm.amount || ''} onChange={e => setP2pForm(p => ({...p, amount: Number(e.target.value)}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm" />
                       </div>
                       <div className="flex flex-col gap-2">
-                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest">TOTAL PRICE (CR)</label>
+                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest uppercase">Total Price (CR)</label>
                         <input type="number" placeholder="Price" value={p2pForm.price || ''} onChange={e => setP2pForm(p => ({...p, price: Number(e.target.value)}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm" />
                       </div>
-                      <button className="bg-cyan-600 hover:bg-cyan-500 text-white font-black orbitron text-[11px] h-[46px] rounded-xl shadow-lg transition-all active:scale-95">LIST OFFER</button>
+                      <button className="bg-cyan-600 hover:bg-cyan-500 text-white font-black orbitron text-[11px] h-[46px] rounded-xl shadow-lg transition-all active:scale-95 uppercase tracking-widest">List Offer</button>
                     </form>
                   </div>
 
                   <div className="glass p-6 rounded-3xl border border-white/5">
-                    <h2 className="orbitron text-sm font-black text-slate-100 mb-6 flex items-center gap-2">
-                      <Globe size={16} className="text-cyan-400" /> GLOBAL MARKET BOARD
+                    <h2 className="orbitron text-sm font-black text-slate-100 mb-6 flex items-center gap-2 uppercase tracking-widest">
+                      <Globe size={16} className="text-cyan-400" /> Galactic Market Board
                     </h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       {marketListings.length === 0 ? (
-                        <div className="col-span-full text-center py-20 text-slate-600 font-mono text-xs uppercase">No active listings in sector.</div>
+                        <div className="col-span-full text-center py-20 text-slate-600 font-mono text-xs uppercase tracking-widest">No active listings in current sector.</div>
                       ) : marketListings.map(listing => (
                         <div key={listing.id} className={`p-5 rounded-2xl border transition-all ${listing.seller_id === currentUser.id ? 'bg-cyan-500/10 border-cyan-500/20' : 'bg-slate-900/50 border-white/5'}`}>
                           <div className="flex justify-between items-start mb-4">
@@ -715,7 +745,7 @@ const App = () => {
                               </div>
                               <div className="flex flex-col">
                                 <span className="text-[10px] font-black orbitron uppercase">{listing.resource_type}</span>
-                                <span className="text-[8px] font-mono text-slate-500">Pilot: {listing.seller_id}</span>
+                                <span className="text-[8px] font-mono text-slate-500">Pilot ID: {listing.seller_id}</span>
                               </div>
                             </div>
                             <span className="text-[10px] font-mono text-slate-600">{new Date(listing.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
@@ -732,9 +762,9 @@ const App = () => {
                           </div>
                           <div className="mt-4 pt-4 border-t border-white/5">
                             {listing.seller_id === currentUser.id ? (
-                              <button onClick={() => handleCancelListing(listing)} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2"><XCircle size={14} /> CANCEL LISTING</button>
+                              <button onClick={() => handleCancelListing(listing)} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2 tracking-widest"><XCircle size={14} /> CANCEL LISTING</button>
                             ) : (
-                              <button onClick={() => handleBuyListing(listing)} disabled={gameState.credits < listing.price} className={`w-full py-3 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2 transition-all ${gameState.credits >= listing.price ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}><ShoppingBag size={14} /> ACCEPT OFFER</button>
+                              <button onClick={() => handleBuyListing(listing)} disabled={gameState.credits < listing.price} className={`w-full py-3 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2 transition-all tracking-widest ${gameState.credits >= listing.price ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}><ShoppingBag size={14} /> ACCEPT OFFER</button>
                             )}
                           </div>
                         </div>
@@ -765,18 +795,18 @@ const App = () => {
                 <div className="glass rounded-3xl p-8 border border-white/5 animate-in fade-in duration-500">
                    <div className="flex items-center gap-4 mb-8">
                      <Trophy size={32} className="text-yellow-400" />
-                     <h2 className="orbitron text-xl font-black italic">GLOBAL LEADERBOARD</h2>
+                     <h2 className="orbitron text-xl font-black italic uppercase tracking-widest">Global Leaderboard</h2>
                    </div>
                    <div className="space-y-4">
                       {(leaderboard || []).length === 0 ? (
-                        <div className="text-center py-10 text-slate-500 font-mono">ESTABLISHING CONNECTION TO PERSISTENCE GRID...</div>
+                        <div className="text-center py-10 text-slate-500 font-mono uppercase tracking-widest">Establishing connection to persistence grid...</div>
                       ) : (leaderboard || []).map((entry, idx) => (
                         <div key={entry.id} className={`flex items-center justify-between p-4 rounded-2xl border ${entry.id === currentUser.id ? 'bg-cyan-500/10 border-cyan-500/30' : 'bg-slate-900/50 border-white/5'}`}>
                            <div className="flex items-center gap-4">
                              <span className="orbitron text-xs font-black text-slate-500">#{idx + 1}</span>
                              <div className="flex flex-col">
-                               <span className="orbitron text-sm font-bold text-white uppercase">{entry.id} {entry.id === currentUser.id && <span className="text-[10px] text-cyan-400">(YOU)</span>}</span>
-                               <span className="text-[8px] font-mono text-slate-500">PILOT CERTIFIED</span>
+                               <span className="orbitron text-sm font-bold text-white uppercase tracking-tighter">{entry.id} {entry.id === currentUser.id && <span className="text-[10px] text-cyan-400">(YOU)</span>}</span>
+                               <span className="text-[8px] font-mono text-slate-500 uppercase">Certified Pilot</span>
                              </div>
                            </div>
                            <span className="orbitron font-black text-yellow-500">{Math.floor(entry.credits || 0).toLocaleString()} <span className="text-[9px]">CR</span></span>
@@ -805,7 +835,7 @@ const ResourceCard = ({ icon, label, val, color, limit }: any) => (
       <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">{label}</span>
       <span className={`orbitron text-xs font-bold ${color}`}>
         {Math.floor(val || 0).toLocaleString()}
-        {limit && <span className="text-[9px] text-slate-700 font-normal"> / {limit.toLocaleString()}</span>}
+        {limit && <span className="text-[9px] text-slate-700 font-normal italic"> / {limit.toLocaleString()}</span>}
       </span>
     </div>
   </div>
@@ -813,13 +843,13 @@ const ResourceCard = ({ icon, label, val, color, limit }: any) => (
 
 const ProductionStat = ({ label, val }: any) => (
   <div className="flex flex-col">
-    <span className="text-[9px] text-slate-600 uppercase font-bold mb-1 tracking-tighter">{label} / sec</span>
+    <span className="text-[9px] text-slate-600 uppercase font-bold mb-1 tracking-tighter">{label} / SEC</span>
     <span className="orbitron text-lg font-black text-white">+{(val || 0).toFixed(1)}</span>
   </div>
 );
 
 const NavBtn = ({ active, onClick, icon, label }: any) => (
-  <button onClick={onClick} className={`flex items-center gap-2 px-6 py-3 rounded-xl transition-all orbitron text-[10px] font-black shrink-0 ${active ? 'bg-cyan-600 text-white shadow-xl shadow-cyan-900/20' : 'text-slate-500 hover:text-slate-300'}`}>
+  <button onClick={onClick} className={`flex items-center gap-2 px-6 py-3 rounded-xl transition-all orbitron text-[10px] font-black shrink-0 tracking-widest ${active ? 'bg-cyan-600 text-white shadow-xl shadow-cyan-900/20' : 'text-slate-500 hover:text-slate-300'}`}>
     {React.cloneElement(icon, { size: 14 })}
     {label.toUpperCase()}
   </button>
@@ -829,10 +859,10 @@ const ShopItem = ({ title, lvl, cost, canBuy, onBuy, icon }: any) => (
   <div className="glass p-5 rounded-2xl border border-white/5 flex flex-col gap-4 group hover:border-cyan-500/20 transition-all bg-slate-900/20">
     <div className="flex justify-between items-center">
       <div className="p-3 bg-slate-950 rounded-xl group-hover:scale-110 transition-transform">{icon}</div>
-      <span className="orbitron text-[10px] font-black text-cyan-400 bg-cyan-400/10 px-3 py-1 rounded-full">LVL {lvl}</span>
+      <span className="orbitron text-[10px] font-black text-cyan-400 bg-cyan-400/10 px-3 py-1 rounded-full uppercase">LVL {lvl}</span>
     </div>
-    <h4 className="font-bold text-slate-200 text-sm">{title}</h4>
-    <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl font-black orbitron text-[10px] transition-all ${canBuy ? 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg shadow-cyan-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
+    <h4 className="font-bold text-slate-200 text-sm uppercase tracking-tight">{title}</h4>
+    <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl font-black orbitron text-[10px] transition-all tracking-widest ${canBuy ? 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg shadow-cyan-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
       UPGRADE: {(cost || 0).toLocaleString()} CR
     </button>
   </div>
@@ -842,13 +872,13 @@ const TechItem = ({ title, desc, lvl, cost, canBuy, onBuy, icon }: any) => (
   <div className="glass p-5 rounded-2xl border border-blue-500/10 flex flex-col gap-4 group hover:border-blue-500/30 transition-all bg-blue-500/5">
     <div className="flex justify-between items-center">
       <div className="p-3 bg-slate-950 rounded-xl group-hover:rotate-12 transition-transform text-blue-400">{React.cloneElement(icon, { size: 20 })}</div>
-      <span className="orbitron text-[10px] font-black text-blue-400 bg-blue-400/10 px-3 py-1 rounded-full">TIER {lvl}</span>
+      <span className="orbitron text-[10px] font-black text-blue-400 bg-blue-400/10 px-3 py-1 rounded-full uppercase tracking-tighter">Tier {lvl}</span>
     </div>
     <div>
-      <h4 className="font-bold text-slate-100 text-sm mb-1">{title}</h4>
-      <p className="text-[10px] text-slate-500 leading-relaxed font-mono">{desc}</p>
+      <h4 className="font-bold text-slate-100 text-sm mb-1 uppercase tracking-tight">{title}</h4>
+      <p className="text-[10px] text-slate-500 leading-relaxed font-mono italic">{desc}</p>
     </div>
-    <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl font-black orbitron text-[10px] transition-all ${canBuy ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
+    <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl font-black orbitron text-[10px] transition-all tracking-widest ${canBuy ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
       RESEARCH: {(cost || 0).toLocaleString()} BITS
     </button>
   </div>
@@ -863,7 +893,7 @@ const MarketCard = ({ resource, data, amount, onSell, icon, tax, showDemand }: a
     <div className="space-y-4">
       <div className="flex justify-between items-end">
         <div className="flex flex-col">
-          <span className="text-[9px] text-slate-500 uppercase font-black">Price / Unit</span>
+          <span className="text-[9px] text-slate-500 uppercase font-black tracking-widest">Price / Unit</span>
           <div className="flex items-center gap-2">
             <span className={`orbitron text-xl font-black ${data?.trend === 'up' ? 'text-green-400' : data?.trend === 'down' ? 'text-red-400' : 'text-yellow-500'}`}>
               {data?.price || 0} <span className="text-[10px]">CR</span>
@@ -872,14 +902,14 @@ const MarketCard = ({ resource, data, amount, onSell, icon, tax, showDemand }: a
           </div>
         </div>
         <div className="text-right">
-          <span className="text-[9px] text-slate-500 uppercase font-black">Holdings</span>
+          <span className="text-[9px] text-slate-500 uppercase font-black tracking-widest">Holdings</span>
           <p className="orbitron font-bold text-white text-sm">{Math.floor(amount || 0).toLocaleString()}</p>
         </div>
       </div>
       {showDemand && (
         <div className="space-y-1">
-          <div className="flex justify-between text-[9px] font-mono text-slate-400">
-            <span>MARKET DEMAND</span>
+          <div className="flex justify-between text-[9px] font-mono text-slate-400 uppercase tracking-tighter">
+            <span>Market Demand</span>
             <span>{Math.floor(data?.demand || 50)}%</span>
           </div>
           <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
@@ -889,14 +919,14 @@ const MarketCard = ({ resource, data, amount, onSell, icon, tax, showDemand }: a
       )}
     </div>
     <div className="pt-4 border-t border-white/5">
-      <div className="flex justify-between text-[10px] font-mono mb-4 text-slate-500">
-        <span>EST. NET REVENUE:</span>
+      <div className="flex justify-between text-[10px] font-mono mb-4 text-slate-500 uppercase tracking-widest">
+        <span>Est. Net Revenue:</span>
         <span className="text-green-400 font-black">+{((amount || 0) * (data?.price || 0) * (1-tax)).toFixed(0)} CR</span>
       </div>
-      <button onClick={onSell} disabled={!amount || amount <= 0} className={`w-full py-4 rounded-2xl font-black orbitron text-[11px] transition-all ${amount > 0 ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
+      <button onClick={onSell} disabled={!amount || amount <= 0} className={`w-full py-4 rounded-2xl font-black orbitron text-[11px] transition-all tracking-widest ${amount > 0 ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
         SELL ALL CARGO
       </button>
-      <p className="text-[8px] text-center mt-2 text-slate-600 font-mono uppercase tracking-widest italic">Includes {(tax*100).toFixed(0)}% Galactic Tax</p>
+      <p className="text-[8px] text-center mt-2 text-slate-600 font-mono uppercase tracking-widest italic opacity-60">Includes {(tax*100).toFixed(0)}% Galactic Sales Tax</p>
     </div>
   </div>
 );
