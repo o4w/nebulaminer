@@ -26,7 +26,8 @@ import {
   PlusCircle,
   XCircle,
   ArrowRightLeft,
-  CloudOff
+  CloudOff,
+  Loader2
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -217,11 +218,9 @@ const DBService = {
     }, { onConflict: 'id' });
     if (error) {
       console.error("Supabase SaveUser Error:", error.message);
-      alert("Kritik Hata: Veritabanı tablosu 'users' bulunamadı veya erişim reddedildi.");
     }
   },
   updateGameState: async (userId: string, state: GameState) => {
-    // Upsert kullanarak kaydın varlığını garanti ediyoruz
     const { error } = await supabase.from('users').upsert({ id: userId, game_state: state }, { onConflict: 'id' });
     if (error) {
       console.error("Supabase UpdateGameState Error:", error.message);
@@ -309,8 +308,8 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
           <div className="w-20 h-20 bg-cyan-500/10 rounded-3xl mx-auto flex items-center justify-center border border-cyan-500/30 mb-6 rotate-3 hover:rotate-0 transition-transform">
             <Globe className="text-cyan-400 w-10 h-10 animate-pulse" />
           </div>
-          <h1 className="orbitron text-2xl font-black text-white tracking-tighter uppercase">Nebula OS v2.6</h1>
-          <p className="text-slate-500 text-xs mt-2 font-mono italic">Persistence Sync v2.0</p>
+          <h1 className="orbitron text-2xl font-black text-white tracking-tighter uppercase">Nebula OS v2.7</h1>
+          <p className="text-slate-500 text-xs mt-2 font-mono italic">Persistence Engine Enabled</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <input required type="text" placeholder="Pilot ID" value={userId} onChange={e => setUserId(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none transition-all font-mono" />
@@ -331,6 +330,7 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
 // --- Main App ---
 const App = () => {
   const [currentUser, setCurrentUser] = useState<UserData | null>(null);
+  const [isInitializing, setIsInitializing] = useState(true);
   const [gameState, setGameState] = useState<GameState>(INITIAL_GAME_STATE);
   const gameStateRef = useRef(gameState);
   const [activeTab, setActiveTab] = useState<'mine' | 'shop' | 'tech' | 'market' | 'social' | 'trade'>('mine');
@@ -341,6 +341,41 @@ const App = () => {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [marketListings, setMarketListings] = useState<MarketListing[]>([]);
   const [floatingTexts, setFloatingTexts] = useState<{ id: number, text: string, x: number, y: number }[]>([]);
+
+  // Oturum Restorasyonu
+  useEffect(() => {
+    const restoreSession = async () => {
+      const savedPilotId = localStorage.getItem('nebula_pilot_id');
+      if (savedPilotId) {
+        const user = await DBService.getUser(savedPilotId);
+        if (user) {
+          handleLogin(user);
+        }
+      }
+      setIsInitializing(false);
+    };
+    restoreSession();
+  }, []);
+
+  const handleLogin = (user: UserData) => {
+    localStorage.setItem('nebula_pilot_id', user.id);
+    setCurrentUser(user); 
+    const safeState = {
+      ...INITIAL_GAME_STATE,
+      ...user.gameState,
+      resources: { ...INITIAL_GAME_STATE.resources, ...(user.gameState?.resources || {}) },
+      upgrades: { ...INITIAL_GAME_STATE.upgrades, ...(user.gameState?.upgrades || {}) },
+      technologies: { ...INITIAL_GAME_STATE.technologies, ...(user.gameState?.technologies || {}) },
+      market: { ...INITIAL_GAME_STATE.market, ...(user.gameState?.market || {}) },
+      missions: user.gameState?.missions || INITIAL_MISSIONS
+    };
+    setGameState(safeState); 
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('nebula_pilot_id');
+    setCurrentUser(null);
+  };
 
   useEffect(() => {
     gameStateRef.current = gameState;
@@ -461,19 +496,20 @@ const App = () => {
     return () => clearInterval(saveInterval);
   }, [currentUser]);
 
-  if (!currentUser) return <AuthScreen onLogin={u => { 
-    setCurrentUser(u); 
-    const safeState = {
-      ...INITIAL_GAME_STATE,
-      ...u.gameState,
-      resources: { ...INITIAL_GAME_STATE.resources, ...(u.gameState?.resources || {}) },
-      upgrades: { ...INITIAL_GAME_STATE.upgrades, ...(u.gameState?.upgrades || {}) },
-      technologies: { ...INITIAL_GAME_STATE.technologies, ...(u.gameState?.technologies || {}) },
-      market: { ...INITIAL_GAME_STATE.market, ...(u.gameState?.market || {}) },
-      missions: u.gameState?.missions || INITIAL_MISSIONS
-    };
-    setGameState(safeState); 
-  }} />;
+  if (isInitializing) {
+    return (
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center gap-6">
+        <div className="w-24 h-24 bg-cyan-500/10 rounded-full border border-cyan-500/30 flex items-center justify-center animate-pulse">
+           <Globe className="text-cyan-400 w-12 h-12" />
+        </div>
+        <div className="flex items-center gap-3 text-cyan-400 font-mono text-xs uppercase tracking-[0.3em]">
+          <Loader2 className="animate-spin" size={16} /> Connecting to Nebula Grid...
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) return <AuthScreen onLogin={handleLogin} />;
 
   const mineManual = (e: React.MouseEvent) => {
     if (gameState.resources.iron < currentStorageLimit) {
@@ -584,7 +620,6 @@ const App = () => {
                   {saveError ? 'CLOUD SYNC FAILED!' : isSaving ? 'DATABASE SYNCING...' : 'DATABASE PERSISTENT'} | PILOT: {currentUser.id}
                 </p>
                 {lastSaved && <p className="text-[8px] text-slate-600 uppercase">Last Success: {lastSaved}</p>}
-                {saveError && <p className="text-[8px] text-red-500 font-bold uppercase">Error: Tables 'users' or 'market_listings' not found or RLS is ON.</p>}
               </div>
             </div>
           </div>
@@ -594,8 +629,9 @@ const App = () => {
               <span className="text-[9px] font-black text-yellow-600 uppercase tracking-widest">Global Balance</span>
               <span className="orbitron text-lg font-bold text-yellow-400">{Math.floor(gameState.credits).toLocaleString()} <span className="text-[10px]">CR</span></span>
             </div>
-            <button onClick={() => setCurrentUser(null)} className="p-4 hover:bg-red-500/10 rounded-2xl text-slate-600 hover:text-red-400 transition-all">
+            <button onClick={handleLogout} className="p-4 hover:bg-red-500/10 rounded-2xl text-slate-600 hover:text-red-400 transition-all flex items-center gap-2 group">
               <LogOut size={20} />
+              <span className="hidden group-hover:inline text-[10px] orbitron font-bold">DISCONNECT</span>
             </button>
           </div>
         </header>
@@ -646,7 +682,7 @@ const App = () => {
                     setIsSaving(false);
                     if (error) {
                       setSaveError(true);
-                      alert(`Kayıt Hatası: Supabase tablonuzun kurulu olduğundan ve RLS ayarlarının kapalı olduğundan emin olun.\n\nHata: ${error.message}`);
+                      alert(`Kayıt Hatası: ${error.message}`);
                     } else {
                       setSaveError(false);
                       setLastSaved(new Date().toLocaleTimeString());
@@ -817,7 +853,7 @@ const App = () => {
         </div>
 
         <footer className="text-center py-12 border-t border-slate-900">
-           <p className="orbitron text-[9px] font-black text-slate-700 uppercase tracking-[0.5em]">Nebula Galactic Protocol | Persistence v2.6 Enabled</p>
+           <p className="orbitron text-[9px] font-black text-slate-700 uppercase tracking-[0.5em]">Nebula Galactic Protocol | Persistence v2.7 Enabled</p>
         </footer>
       </div>
     </div>
