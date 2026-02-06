@@ -25,9 +25,34 @@ import {
   Users,
   PlusCircle,
   XCircle,
-  ArrowRightLeft
+  ArrowRightLeft,
+  CloudOff
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
+
+/**
+ * --- SUPABASE KURULUM TALİMATI ---
+ * Supabase Dashboard -> SQL Editor kısmına aşağıdaki kodları yapıştırıp 'Run' butonuna basın:
+ * 
+ * create table if not exists users (
+ *   id text primary key,
+ *   password text not null,
+ *   game_state jsonb default '{}'::jsonb,
+ *   updated_at timestamp with time zone default now()
+ * );
+ * 
+ * create table if not exists market_listings (
+ *   id uuid default gen_random_uuid() primary key,
+ *   seller_id text references users(id) on delete cascade,
+ *   resource_type text not null,
+ *   amount double precision not null,
+ *   price double precision not null,
+ *   created_at timestamp with time zone default now()
+ * );
+ * 
+ * alter table users disable row level security;
+ * alter table market_listings disable row level security;
+ */
 
 // --- Supabase Client Initialization ---
 const SUPABASE_URL = 'https://slfxijiowcbqzhzlnhhh.supabase.co';
@@ -169,28 +194,40 @@ const STORAGE_LIMITS = (level: number, techLevel: number) =>
 // --- Database Service (Supabase) ---
 const DBService = {
   getUser: async (userId: string): Promise<UserData | null> => {
-    const { data, error } = await supabase.from('users').select('*').eq('id', userId).single();
-    if (error) {
-      console.error("Supabase GetUser Error:", error);
+    try {
+      const { data, error } = await supabase.from('users').select('*').eq('id', userId).single();
+      if (error) {
+        console.error("Supabase GetUser Error:", error.message);
+        return null;
+      }
+      return {
+        id: data.id,
+        password: data.password,
+        gameState: data.game_state
+      };
+    } catch (e) {
       return null;
     }
-    return {
-      id: data.id,
-      password: data.password,
-      gameState: data.game_state
-    };
   },
   saveUser: async (user: UserData) => {
     const { error } = await supabase.from('users').upsert({
       id: user.id,
       password: user.password,
       game_state: user.gameState
-    });
-    if (error) console.error("Supabase SaveUser Error:", error);
+    }, { onConflict: 'id' });
+    if (error) {
+      console.error("Supabase SaveUser Error:", error.message);
+      alert("Kritik Hata: Veritabanı tablosu 'users' bulunamadı veya erişim reddedildi.");
+    }
   },
   updateGameState: async (userId: string, state: GameState) => {
-    const { error } = await supabase.from('users').update({ game_state: state }).eq('id', userId);
-    if (error) console.error("Supabase UpdateGameState Error:", error);
+    // Upsert kullanarak kaydın varlığını garanti ediyoruz
+    const { error } = await supabase.from('users').upsert({ id: userId, game_state: state }, { onConflict: 'id' });
+    if (error) {
+      console.error("Supabase UpdateGameState Error:", error.message);
+      return error;
+    }
+    return null;
   },
   getLeaderboard: async (): Promise<LeaderboardEntry[]> => {
     const { data, error } = await supabase
@@ -212,15 +249,15 @@ const DBService = {
   },
   postListing: async (listing: Omit<MarketListing, 'id' | 'created_at'>) => {
     const { error } = await supabase.from('market_listings').insert(listing);
-    if (error) console.error("Supabase PostListing Error:", error);
+    if (error) console.error("Supabase PostListing Error:", error.message);
   },
   cancelListing: async (listingId: string) => {
     const { error } = await supabase.from('market_listings').delete().eq('id', listingId);
-    if (error) console.error("Supabase CancelListing Error:", error);
+    if (error) console.error("Supabase CancelListing Error:", error.message);
   },
   purchaseListing: async (listing: MarketListing, buyerId: string) => {
     const seller = await DBService.getUser(listing.seller_id);
-    if (!seller) throw new Error("Seller not found");
+    if (!seller) throw new Error("Satıcı bulunamadı.");
     const sellerState = seller.gameState;
     sellerState.credits += listing.price;
     await DBService.updateGameState(listing.seller_id, sellerState);
@@ -255,11 +292,11 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
         if (user && user.password === password) {
           onLogin(user);
         } else {
-          setError('Geçersiz kimlik.');
+          setError('Geçersiz kimlik veya şifre.');
         }
       }
     } catch (err) {
-      setError('Bağlantı hatası.');
+      setError('Veritabanı bağlantısı kurulamadı.');
     } finally {
       setLoading(false);
     }
@@ -272,8 +309,8 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
           <div className="w-20 h-20 bg-cyan-500/10 rounded-3xl mx-auto flex items-center justify-center border border-cyan-500/30 mb-6 rotate-3 hover:rotate-0 transition-transform">
             <Globe className="text-cyan-400 w-10 h-10 animate-pulse" />
           </div>
-          <h1 className="orbitron text-2xl font-black text-white tracking-tighter uppercase">Nebula OS v2.5</h1>
-          <p className="text-slate-500 text-xs mt-2 font-mono">P2P Trade Node Enabled</p>
+          <h1 className="orbitron text-2xl font-black text-white tracking-tighter uppercase">Nebula OS v2.6</h1>
+          <p className="text-slate-500 text-xs mt-2 font-mono italic">Persistence Sync v2.0</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <input required type="text" placeholder="Pilot ID" value={userId} onChange={e => setUserId(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none transition-all font-mono" />
@@ -295,21 +332,20 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: UserData) => void }) => {
 const App = () => {
   const [currentUser, setCurrentUser] = useState<UserData | null>(null);
   const [gameState, setGameState] = useState<GameState>(INITIAL_GAME_STATE);
-  const gameStateRef = useRef(gameState); // Güncel state'i yakalamak için ref
+  const gameStateRef = useRef(gameState);
   const [activeTab, setActiveTab] = useState<'mine' | 'shop' | 'tech' | 'market' | 'social' | 'trade'>('mine');
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
   const [lastSaved, setLastSaved] = useState<string | null>(null);
   const [activeEvent, setActiveEvent] = useState<CosmicEvent | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [marketListings, setMarketListings] = useState<MarketListing[]>([]);
   const [floatingTexts, setFloatingTexts] = useState<{ id: number, text: string, x: number, y: number }[]>([]);
 
-  // State değiştikçe ref'i güncelle
   useEffect(() => {
     gameStateRef.current = gameState;
   }, [gameState]);
 
-  // P2P Form State
   const [p2pForm, setP2pForm] = useState<{ resource: keyof typeof BASE_MARKET_PRICES, amount: number, price: number }>({
     resource: 'iron',
     amount: 0,
@@ -326,13 +362,12 @@ const App = () => {
     [gameState.upgrades.storageLevel, gameState.technologies.nanoStorage]
   );
 
-  // --- Olay Sistemi (Random Cosmic Events) ---
+  // --- Olay Sistemi ---
   useEffect(() => {
     if (!currentUser) return;
     const eventInterval = setInterval(() => {
       if (activeEvent) return;
-      const roll = Math.random();
-      if (roll < 0.2) { 
+      if (Math.random() < 0.2) { 
         const events: CosmicEvent[] = [
           { id: '1', name: 'Güneş Fırtınası', description: 'Plazma üretimi %100 arttı!', effect: 'plasma_boost', duration: 30 },
           { id: '2', name: 'Meteor Yağmuru', description: 'Demir fiyatları dip yaptı!', effect: 'iron_crash', duration: 30 },
@@ -397,31 +432,7 @@ const App = () => {
     return () => clearInterval(marketInterval);
   }, [currentUser, activeEvent]);
 
-  // --- Görev Kontrolü ---
-  useEffect(() => {
-    if (!currentUser || !gameState.missions) return;
-    setGameState(prev => {
-      let changed = false;
-      const newMissions = (prev.missions || []).map(m => {
-        if (m.completed) return m;
-        let isComplete = false;
-        if (m.requirement.type === 'credits') isComplete = prev.credits >= m.requirement.amount;
-        else isComplete = prev.resources[m.requirement.type] >= m.requirement.amount;
-        if (isComplete) {
-          changed = true;
-          return { ...m, completed: true };
-        }
-        return m;
-      });
-      if (changed) {
-        const reward = newMissions.filter((m, i) => m.completed && !(prev.missions[i]?.completed)).reduce((acc, m) => acc + m.reward, 0);
-        return { ...prev, credits: prev.credits + reward, missions: newMissions };
-      }
-      return prev;
-    });
-  }, [gameState.resources, gameState.credits, currentUser]);
-
-  // --- Market & Leaderboard Sync ---
+  // --- Market Sync ---
   const syncGlobalData = useCallback(() => {
     if (activeTab === 'social') DBService.getLeaderboard().then(setLeaderboard);
     if (activeTab === 'trade') DBService.getListings().then(setMarketListings);
@@ -433,19 +444,20 @@ const App = () => {
     return () => clearInterval(syncInterval);
   }, [activeTab, syncGlobalData]);
 
-  // --- Auto-Save FIX ---
-  // Artık gameState her değiştiğinde sıfırlanmayan sabit bir periyotla çalışır.
+  // --- Auto-Save Fix ---
   useEffect(() => {
     if (!currentUser) return;
-    
     const saveInterval = setInterval(async () => {
       setIsSaving(true);
-      // gameStateRef.current kullanarak timer resetlenmeden güncel veriyi göndeririz.
-      await DBService.updateGameState(currentUser.id, gameStateRef.current);
+      const error = await DBService.updateGameState(currentUser.id, gameStateRef.current);
       setIsSaving(false);
-      setLastSaved(new Date().toLocaleTimeString());
-    }, 20000); // Her 20 saniyede bir kaydet
-    
+      if (error) {
+        setSaveError(true);
+      } else {
+        setSaveError(false);
+        setLastSaved(new Date().toLocaleTimeString());
+      }
+    }, 15000);
     return () => clearInterval(saveInterval);
   }, [currentUser]);
 
@@ -525,7 +537,7 @@ const App = () => {
   const handleBuyListing = async (listing: MarketListing) => {
     if (gameState.credits < listing.price) return;
     if (gameState.resources[listing.resource_type] + listing.amount > currentStorageLimit) {
-      alert("Depo dolu! Kargo kapasitesini geliştir.");
+      alert("Depo dolu! Kapasiteyi artır.");
       return;
     }
     try {
@@ -537,7 +549,7 @@ const App = () => {
       }));
       syncGlobalData();
     } catch (err) {
-      alert("Ticaret başarısız: " + err);
+      alert("Hata: " + (err as Error).message);
     }
   };
 
@@ -568,23 +580,14 @@ const App = () => {
               <h1 className="orbitron text-2xl font-black tracking-tight text-white uppercase italic">Nebula <span className="text-cyan-400">Trading Hub</span></h1>
               <div className="text-[10px] font-mono text-slate-500 tracking-[0.2em] flex flex-col gap-1 mt-1">
                 <p className="flex items-center gap-2">
-                  <span className={`w-2 h-2 ${isSaving ? 'bg-yellow-500 animate-pulse' : 'bg-green-500'} rounded-full`} /> 
-                  {isSaving ? 'DATABASE SYNCING...' : 'DATABASE PERSISTENT'} | PILOT: {currentUser.id}
+                  <span className={`w-2 h-2 ${saveError ? 'bg-red-500 animate-pulse' : isSaving ? 'bg-yellow-500 animate-pulse' : 'bg-green-500'} rounded-full`} /> 
+                  {saveError ? 'CLOUD SYNC FAILED!' : isSaving ? 'DATABASE SYNCING...' : 'DATABASE PERSISTENT'} | PILOT: {currentUser.id}
                 </p>
-                {lastSaved && <p className="text-[8px] text-slate-600 uppercase">LAST CLOUD SYNC: {lastSaved}</p>}
+                {lastSaved && <p className="text-[8px] text-slate-600 uppercase">Last Success: {lastSaved}</p>}
+                {saveError && <p className="text-[8px] text-red-500 font-bold uppercase">Error: Tables 'users' or 'market_listings' not found or RLS is ON.</p>}
               </div>
             </div>
           </div>
-
-          {activeEvent && (
-            <div className="flex-1 max-w-sm px-6 py-2 bg-yellow-500/10 border border-yellow-500/20 rounded-2xl flex items-center gap-4 animate-pulse">
-               <AlertCircle className="text-yellow-400 shrink-0" size={18} />
-               <div className="flex flex-col">
-                 <span className="text-[10px] orbitron font-black text-yellow-400 uppercase">{activeEvent.name}</span>
-                 <span className="text-[8px] text-slate-400 font-mono uppercase">{activeEvent.description}</span>
-               </div>
-            </div>
-          )}
 
           <div className="flex items-center gap-3">
             <div className="bg-slate-900/80 px-6 py-3 rounded-2xl border border-yellow-500/20 shadow-inner flex flex-col items-end">
@@ -610,7 +613,7 @@ const App = () => {
                 </div>
               </div>
             ))}
-            <span className="text-slate-600 ml-10">| CLOUD STORAGE ACTIVE | PERSISTENT WORLD ENABLED | PILOT CONNECTED |</span>
+            <span className="text-slate-600 ml-10">| CLOUD PERSISTENCE ACTIVE | SECTOR STATUS: {saveError ? 'CONNECTION ERROR' : 'OPTIMAL'} |</span>
           </div>
         </section>
 
@@ -628,29 +631,32 @@ const App = () => {
                         <span className="text-[9px] font-black orbitron text-white">{m.title}</span>
                         {m.completed && <Star size={10} className="text-yellow-400 fill-yellow-400" />}
                       </div>
-                      <p className="text-[8px] text-slate-500 font-mono">{m.description}</p>
-                      {!m.completed && (
-                        <div className="mt-2 h-1 bg-slate-800 rounded-full overflow-hidden">
-                          <div className="h-full bg-yellow-500" style={{ width: `${Math.min(100, (m.requirement.type === 'credits' ? gameState.credits : (gameState.resources as any)[m.requirement.type]) / m.requirement.amount * 100)}%` }} />
-                        </div>
-                      )}
+                      <p className="text-[8px] text-slate-500 font-mono italic">{m.description}</p>
                     </div>
                   ))}
                 </div>
              </div>
              
              <div className="glass rounded-3xl p-6 border border-cyan-500/10 text-center">
-                <p className="text-[9px] font-mono text-slate-500 uppercase mb-2">Manual Sync</p>
+                <p className="text-[9px] font-mono text-slate-500 uppercase mb-2">Diagnostic Tools</p>
                 <button 
                   onClick={async () => {
                     setIsSaving(true);
-                    await DBService.updateGameState(currentUser.id, gameStateRef.current);
+                    const error = await DBService.updateGameState(currentUser.id, gameStateRef.current);
                     setIsSaving(false);
-                    setLastSaved(new Date().toLocaleTimeString());
+                    if (error) {
+                      setSaveError(true);
+                      alert(`Kayıt Hatası: Supabase tablonuzun kurulu olduğundan ve RLS ayarlarının kapalı olduğundan emin olun.\n\nHata: ${error.message}`);
+                    } else {
+                      setSaveError(false);
+                      setLastSaved(new Date().toLocaleTimeString());
+                      alert("Başarıyla buluta kaydedildi.");
+                    }
                   }}
-                  className="w-full py-2 bg-slate-900 border border-slate-700 rounded-xl hover:bg-slate-800 transition-colors text-[10px] orbitron font-bold text-cyan-400"
+                  className={`w-full py-2 rounded-xl border transition-colors text-[10px] orbitron font-bold flex items-center justify-center gap-2 ${saveError ? 'bg-red-500/10 border-red-500 text-red-500' : 'bg-slate-900 border-slate-700 text-cyan-400 hover:bg-slate-800'}`}
                 >
-                  SAVE NOW
+                  {saveError ? <CloudOff size={14} /> : <RefreshCw size={14} className={isSaving ? 'animate-spin' : ''} />} 
+                  FORCE SYNC
                 </button>
              </div>
           </aside>
@@ -672,7 +678,7 @@ const App = () => {
               <NavBtn active={activeTab === 'social'} onClick={() => setActiveTab('social')} icon={<Trophy />} label="Social" />
             </nav>
 
-            <div className="flex-1">
+            <div className="flex-1 min-h-[500px]">
               {activeTab === 'mine' && (
                 <div className="flex flex-col items-center justify-center min-h-[400px] animate-in fade-in zoom-in duration-500">
                   <div className="relative group mb-12">
@@ -680,8 +686,8 @@ const App = () => {
                      <button onClick={mineManual} className="relative w-56 h-56 md:w-72 md:h-72 glass border-4 border-slate-700/50 rounded-full flex flex-col items-center justify-center gap-3 hover:scale-105 active:scale-90 transition-all shadow-2xl overflow-hidden">
                         <div className="absolute inset-0 border-[20px] border-t-cyan-500/20 border-r-transparent border-b-transparent border-l-transparent rounded-full animate-spin-slow" />
                         <Pickaxe size={48} className="text-cyan-400" />
-                        <span className="orbitron text-sm font-black text-white tracking-widest">ASTEROID CORE</span>
-                        <span className="font-mono text-[10px] text-cyan-600 uppercase tracking-widest">Fragments Detected</span>
+                        <span className="orbitron text-sm font-black text-white tracking-widest uppercase">Asteroid Core</span>
+                        <span className="font-mono text-[10px] text-cyan-600 uppercase tracking-widest">Manual Node</span>
                      </button>
                   </div>
                   <div className="grid grid-cols-3 gap-8 text-center">
@@ -710,7 +716,7 @@ const App = () => {
                     </h2>
                     <form onSubmit={handlePostTrade} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
                       <div className="flex flex-col gap-2">
-                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest">RESOURCE</label>
+                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest uppercase">Resource</label>
                         <select value={p2pForm.resource} onChange={e => setP2pForm(p => ({...p, resource: e.target.value as any}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm">
                           <option value="iron">Iron</option>
                           <option value="plasma">Plasma</option>
@@ -719,11 +725,11 @@ const App = () => {
                       </div>
                       <div className="flex flex-col gap-2">
                         <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest uppercase">Amount</label>
-                        <input type="number" placeholder="Amount" value={p2pForm.amount || ''} onChange={e => setP2pForm(p => ({...p, amount: Number(e.target.value)}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm" />
+                        <input type="number" placeholder="0" value={p2pForm.amount || ''} onChange={e => setP2pForm(p => ({...p, amount: Number(e.target.value)}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm" />
                       </div>
                       <div className="flex flex-col gap-2">
-                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest uppercase">Total Price (CR)</label>
-                        <input type="number" placeholder="Price" value={p2pForm.price || ''} onChange={e => setP2pForm(p => ({...p, price: Number(e.target.value)}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm" />
+                        <label className="text-[10px] orbitron font-bold text-slate-500 tracking-widest uppercase">Price (CR)</label>
+                        <input type="number" placeholder="0" value={p2pForm.price || ''} onChange={e => setP2pForm(p => ({...p, price: Number(e.target.value)}))} className="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-cyan-50 focus:border-cyan-500 outline-none font-mono text-sm" />
                       </div>
                       <button className="bg-cyan-600 hover:bg-cyan-500 text-white font-black orbitron text-[11px] h-[46px] rounded-xl shadow-lg transition-all active:scale-95 uppercase tracking-widest">List Offer</button>
                     </form>
@@ -735,7 +741,7 @@ const App = () => {
                     </h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       {marketListings.length === 0 ? (
-                        <div className="col-span-full text-center py-20 text-slate-600 font-mono text-xs uppercase tracking-widest">No active listings in current sector.</div>
+                        <div className="col-span-full text-center py-20 text-slate-600 font-mono text-xs uppercase tracking-widest">No active listings in sector.</div>
                       ) : marketListings.map(listing => (
                         <div key={listing.id} className={`p-5 rounded-2xl border transition-all ${listing.seller_id === currentUser.id ? 'bg-cyan-500/10 border-cyan-500/20' : 'bg-slate-900/50 border-white/5'}`}>
                           <div className="flex justify-between items-start mb-4">
@@ -745,7 +751,7 @@ const App = () => {
                               </div>
                               <div className="flex flex-col">
                                 <span className="text-[10px] font-black orbitron uppercase">{listing.resource_type}</span>
-                                <span className="text-[8px] font-mono text-slate-500">Pilot ID: {listing.seller_id}</span>
+                                <span className="text-[8px] font-mono text-slate-500 tracking-tighter">Pilot: {listing.seller_id}</span>
                               </div>
                             </div>
                             <span className="text-[10px] font-mono text-slate-600">{new Date(listing.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
@@ -762,24 +768,15 @@ const App = () => {
                           </div>
                           <div className="mt-4 pt-4 border-t border-white/5">
                             {listing.seller_id === currentUser.id ? (
-                              <button onClick={() => handleCancelListing(listing)} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2 tracking-widest"><XCircle size={14} /> CANCEL LISTING</button>
+                              <button onClick={() => handleCancelListing(listing)} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2 tracking-widest uppercase"><XCircle size={14} /> Cancel Listing</button>
                             ) : (
-                              <button onClick={() => handleBuyListing(listing)} disabled={gameState.credits < listing.price} className={`w-full py-3 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2 transition-all tracking-widest ${gameState.credits >= listing.price ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}><ShoppingBag size={14} /> ACCEPT OFFER</button>
+                              <button onClick={() => handleBuyListing(listing)} disabled={gameState.credits < listing.price} className={`w-full py-3 orbitron font-black text-[10px] rounded-xl flex items-center justify-center gap-2 transition-all tracking-widest uppercase ${gameState.credits >= listing.price ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}><ShoppingBag size={14} /> Accept Offer</button>
                             )}
                           </div>
                         </div>
                       ))}
                     </div>
                   </div>
-                </div>
-              )}
-
-              {activeTab === 'tech' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in zoom-in duration-500">
-                  <TechItem title="Market AI Interface" desc="Reveals demand sensitivity metrics." lvl={gameState.technologies.marketAI} cost={TECH_COSTS.marketAI(gameState.technologies.marketAI)} canBuy={gameState.resources.dataBits >= TECH_COSTS.marketAI(gameState.technologies.marketAI)} onBuy={() => researchTech('marketAI')} icon={<TrendingUp />} />
-                  <TechItem title="Trade Tax Optimization" desc="Reduces galactic sales tax by 3%." lvl={gameState.technologies.taxOptimization} cost={TECH_COSTS.taxOptimization(gameState.technologies.taxOptimization)} canBuy={gameState.resources.dataBits >= TECH_COSTS.taxOptimization(gameState.technologies.taxOptimization)} onBuy={() => researchTech('taxOptimization')} icon={<ArrowUpRight />} />
-                  <TechItem title="Nano-Storage Clusters" desc="Increases capacity via compression." lvl={gameState.technologies.nanoStorage} cost={TECH_COSTS.nanoStorage(gameState.technologies.nanoStorage)} canBuy={gameState.resources.dataBits >= TECH_COSTS.nanoStorage(gameState.technologies.nanoStorage)} onBuy={() => researchTech('nanoStorage')} icon={<Settings />} />
-                  <TechItem title="Neural Click Link" desc="Massive boost to manual mining." lvl={gameState.technologies.neuralMining} cost={TECH_COSTS.neuralMining(gameState.technologies.neuralMining)} canBuy={gameState.resources.dataBits >= TECH_COSTS.neuralMining(gameState.technologies.neuralMining)} onBuy={() => researchTech('neuralMining')} icon={<Target />} />
                 </div>
               )}
 
@@ -799,14 +796,14 @@ const App = () => {
                    </div>
                    <div className="space-y-4">
                       {(leaderboard || []).length === 0 ? (
-                        <div className="text-center py-10 text-slate-500 font-mono uppercase tracking-widest">Establishing connection to persistence grid...</div>
+                        <div className="text-center py-10 text-slate-500 font-mono uppercase tracking-widest italic opacity-50">Establishing connection to persistence grid...</div>
                       ) : (leaderboard || []).map((entry, idx) => (
                         <div key={entry.id} className={`flex items-center justify-between p-4 rounded-2xl border ${entry.id === currentUser.id ? 'bg-cyan-500/10 border-cyan-500/30' : 'bg-slate-900/50 border-white/5'}`}>
                            <div className="flex items-center gap-4">
-                             <span className="orbitron text-xs font-black text-slate-500">#{idx + 1}</span>
+                             <span className="orbitron text-xs font-black text-slate-500 tracking-tighter">#{idx + 1}</span>
                              <div className="flex flex-col">
-                               <span className="orbitron text-sm font-bold text-white uppercase tracking-tighter">{entry.id} {entry.id === currentUser.id && <span className="text-[10px] text-cyan-400">(YOU)</span>}</span>
-                               <span className="text-[8px] font-mono text-slate-500 uppercase">Certified Pilot</span>
+                               <span className="orbitron text-sm font-bold text-white uppercase tracking-tighter">{entry.id} {entry.id === currentUser.id && <span className="text-[10px] text-cyan-400 tracking-normal">(YOU)</span>}</span>
+                               <span className="text-[8px] font-mono text-slate-500 uppercase tracking-widest">Certified Pilot</span>
                              </div>
                            </div>
                            <span className="orbitron font-black text-yellow-500">{Math.floor(entry.credits || 0).toLocaleString()} <span className="text-[9px]">CR</span></span>
@@ -820,7 +817,7 @@ const App = () => {
         </div>
 
         <footer className="text-center py-12 border-t border-slate-900">
-           <p className="orbitron text-[9px] font-black text-slate-700 uppercase tracking-[0.5em]">Nebula Galactic Trading Protocol | Cloud Persistence Active</p>
+           <p className="orbitron text-[9px] font-black text-slate-700 uppercase tracking-[0.5em]">Nebula Galactic Protocol | Persistence v2.6 Enabled</p>
         </footer>
       </div>
     </div>
@@ -859,7 +856,7 @@ const ShopItem = ({ title, lvl, cost, canBuy, onBuy, icon }: any) => (
   <div className="glass p-5 rounded-2xl border border-white/5 flex flex-col gap-4 group hover:border-cyan-500/20 transition-all bg-slate-900/20">
     <div className="flex justify-between items-center">
       <div className="p-3 bg-slate-950 rounded-xl group-hover:scale-110 transition-transform">{icon}</div>
-      <span className="orbitron text-[10px] font-black text-cyan-400 bg-cyan-400/10 px-3 py-1 rounded-full uppercase">LVL {lvl}</span>
+      <span className="orbitron text-[10px] font-black text-cyan-400 bg-cyan-400/10 px-3 py-1 rounded-full uppercase tracking-tighter">LVL {lvl}</span>
     </div>
     <h4 className="font-bold text-slate-200 text-sm uppercase tracking-tight">{title}</h4>
     <button onClick={onBuy} disabled={!canBuy} className={`w-full py-3 rounded-xl font-black orbitron text-[10px] transition-all tracking-widest ${canBuy ? 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg shadow-cyan-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
@@ -872,7 +869,7 @@ const TechItem = ({ title, desc, lvl, cost, canBuy, onBuy, icon }: any) => (
   <div className="glass p-5 rounded-2xl border border-blue-500/10 flex flex-col gap-4 group hover:border-blue-500/30 transition-all bg-blue-500/5">
     <div className="flex justify-between items-center">
       <div className="p-3 bg-slate-950 rounded-xl group-hover:rotate-12 transition-transform text-blue-400">{React.cloneElement(icon, { size: 20 })}</div>
-      <span className="orbitron text-[10px] font-black text-blue-400 bg-blue-400/10 px-3 py-1 rounded-full uppercase tracking-tighter">Tier {lvl}</span>
+      <span className="orbitron text-[10px] font-black text-blue-400 bg-blue-400/10 px-3 py-1 rounded-full uppercase tracking-tighter">TIER {lvl}</span>
     </div>
     <div>
       <h4 className="font-bold text-slate-100 text-sm mb-1 uppercase tracking-tight">{title}</h4>
@@ -906,27 +903,16 @@ const MarketCard = ({ resource, data, amount, onSell, icon, tax, showDemand }: a
           <p className="orbitron font-bold text-white text-sm">{Math.floor(amount || 0).toLocaleString()}</p>
         </div>
       </div>
-      {showDemand && (
-        <div className="space-y-1">
-          <div className="flex justify-between text-[9px] font-mono text-slate-400 uppercase tracking-tighter">
-            <span>Market Demand</span>
-            <span>{Math.floor(data?.demand || 50)}%</span>
-          </div>
-          <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
-            <div className="h-full bg-cyan-400 transition-all duration-1000" style={{ width: `${data?.demand || 50}%` }} />
-          </div>
-        </div>
-      )}
     </div>
     <div className="pt-4 border-t border-white/5">
-      <div className="flex justify-between text-[10px] font-mono mb-4 text-slate-500 uppercase tracking-widest">
+      <div className="flex justify-between text-[10px] font-mono mb-4 text-slate-500 uppercase tracking-widest italic opacity-60">
         <span>Est. Net Revenue:</span>
         <span className="text-green-400 font-black">+{((amount || 0) * (data?.price || 0) * (1-tax)).toFixed(0)} CR</span>
       </div>
-      <button onClick={onSell} disabled={!amount || amount <= 0} className={`w-full py-4 rounded-2xl font-black orbitron text-[11px] transition-all tracking-widest ${amount > 0 ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
-        SELL ALL CARGO
+      <button onClick={onSell} disabled={!amount || amount <= 0} className={`w-full py-4 rounded-2xl font-black orbitron text-[11px] transition-all tracking-widest uppercase ${amount > 0 ? 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
+        Sell All Cargo
       </button>
-      <p className="text-[8px] text-center mt-2 text-slate-600 font-mono uppercase tracking-widest italic opacity-60">Includes {(tax*100).toFixed(0)}% Galactic Sales Tax</p>
+      <p className="text-[8px] text-center mt-2 text-slate-600 font-mono uppercase tracking-widest italic opacity-40">Tax: {(tax*100).toFixed(0)}%</p>
     </div>
   </div>
 );
