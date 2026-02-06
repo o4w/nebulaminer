@@ -107,7 +107,7 @@ interface GameState {
   sectors: Sector[];
   threatLevel: number; 
   lastUpdate: number;
-  market: { [key: string]: { price: number; trend: 'up' | 'down' | 'stable' } };
+  market: { [key: string]: { price: number; prevPrice: number; trend: 'up' | 'down' | 'stable' } };
 }
 
 interface UserData {
@@ -153,10 +153,10 @@ const INITIAL_GAME_STATE: GameState = {
   threatLevel: 10,
   lastUpdate: Date.now(),
   market: {
-    iron: { price: 2, trend: 'stable' },
-    plasma: { price: 15, trend: 'stable' },
-    crystal: { price: 50, trend: 'stable' },
-    darkMatter: { price: 500, trend: 'stable' }
+    iron: { price: 2, prevPrice: 2, trend: 'stable' },
+    plasma: { price: 15, prevPrice: 15, trend: 'stable' },
+    crystal: { price: 50, prevPrice: 50, trend: 'stable' },
+    darkMatter: { price: 500, prevPrice: 500, trend: 'stable' }
   }
 };
 
@@ -225,7 +225,6 @@ const App = () => {
   const handleLogin = (user: UserData) => {
     localStorage.setItem('nebula_pilot_id', user.id);
     setCurrentUser(user);
-    // Mevcut state'i sektörleri INITIAL_GAME_STATE ile senkronize ederek güncelle (yeni sektörler için)
     const mergedSectors = SECTORS.map(s => {
         const existing = user.gameState.sectors?.find(es => es.id === s.id);
         return existing ? { ...s, controlled: existing.controlled } : s;
@@ -315,8 +314,25 @@ const App = () => {
           .filter(s => s.controlled)
           .reduce((acc, s) => acc + (s.resourceMultiplier * 0.5), 0);
 
+        // Dinamik Market Fiyat Dalgalanması (her 10 saniyede bir)
+        let updatedMarket = prev.market;
+        if (Math.floor(Date.now() / 1000) % 10 === 0) {
+            // Fix: Cast Object.entries to correct type to resolve 'unknown' property access errors
+            updatedMarket = (Object.entries(prev.market) as [string, { price: number; prevPrice: number; trend: 'up' | 'down' | 'stable' }][]).reduce((acc, [key, data]) => {
+                const change = (Math.random() - 0.45) * 0.15; // -%6.75 ile +%8.25 arası
+                const newPrice = Math.max(1, Math.round(data.price * (1 + change) * 100) / 100);
+                acc[key] = {
+                    price: newPrice,
+                    prevPrice: data.price,
+                    trend: newPrice > data.price ? 'up' : newPrice < data.price ? 'down' : 'stable'
+                };
+                return acc;
+            }, {} as GameState['market']);
+        }
+
         const newState = {
           ...prev,
+          market: updatedMarket,
           resources: {
             ...prev.resources,
             iron: Math.min(maxCap, prev.resources.iron + (prev.upgrades.autoMiners * 0.5 + miningBonus + sectorBonus) * delta),
@@ -623,7 +639,7 @@ const App = () => {
            <QuickStat icon={<Database />} label="Demir" val={gameState.resources.iron} max={currentMaxStorage} color="text-slate-400" />
            <QuickStat icon={<Zap />} label="Plazma" val={gameState.resources.plasma} max={currentMaxStorage} color="text-purple-400" />
            <QuickStat icon={<Gem />} label="Kristal" val={gameState.resources.crystal} max={currentMaxStorage} color="text-emerald-400" />
-           <QuickStat icon={<Rocket />} label="Gemiler" val={(Object.values(gameState.fleet) as number[]).reduce((a, b) => a + b, 0)} color="text-cyan-400" />
+           <QuickStat icon={<Rocket />} label="Gemiler" val={(Object.values(gameState.fleet) as number[]).reduce((a, b) => (a as number) + (b as number), 0)} color="text-cyan-400" />
            <QuickStat icon={<Crosshair />} label="Sektörler" val={gameState.sectors.filter(s => s.controlled).length} color="text-green-400" />
         </div>
 
@@ -670,7 +686,7 @@ const App = () => {
 
                     {/* Yükseltme Merkezi */}
                     <div className="glass rounded-[2.5rem] p-8 border border-white/5 bg-slate-900/20">
-                        <h3 className="orbitron text-xs font-black text-slate-500 uppercase tracking-[0.3em] mb-6 flex items-center gap-2">
+                        <h3 className="orbitron text-xs font-black text-slate-500 uppercase tracking-[0.3em] mb-6 flex items-center gap-2 text-left">
                            <Zap size={14} className="text-yellow-500" /> Teknolojik Otomasyon Merkezi
                         </h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -738,12 +754,82 @@ const App = () => {
              </div>
            )}
 
+           {activeTab === 'market' && (
+             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-in slide-in-from-top-12 duration-500">
+                {/* Fix: Cast Object.entries to correct type to resolve 'unknown' property access errors */}
+                {(Object.entries(gameState.market) as [string, { price: number; prevPrice: number; trend: 'up' | 'down' | 'stable' }][]).map(([key, data]) => {
+                    const priceDiff = data.price - data.prevPrice;
+                    const percentChange = data.prevPrice !== 0 ? ((priceDiff / data.prevPrice) * 100).toFixed(2) : "0.00";
+                    const isPositive = priceDiff >= 0;
+
+                    return (
+                        <div key={key} className="glass p-8 rounded-[2.5rem] border border-white/5 text-left relative group">
+                            <p className="orbitron text-sm font-black text-white uppercase mb-4 italic">{key.toUpperCase()}</p>
+                            
+                            {/* Fiyat ve Tooltip */}
+                            <div className="relative inline-block cursor-help mb-6">
+                                <div className="flex items-baseline gap-2">
+                                    <p className={`orbitron text-3xl font-black ${isPositive ? 'text-yellow-500' : 'text-red-400'}`}>
+                                        {data.price.toFixed(2)} <span className="text-sm">CR</span>
+                                    </p>
+                                    {data.trend !== 'stable' && (
+                                        <div className={`text-[10px] font-mono flex items-center ${isPositive ? 'text-green-500' : 'text-red-500'}`}>
+                                            {isPositive ? <ArrowUpRight size={14}/> : <TrendingDown size={14}/>}
+                                            %{Math.abs(Number(percentChange))}
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Özel Tooltip */}
+                                <div className="absolute bottom-full left-0 mb-3 opacity-0 group-hover:opacity-100 transition-all duration-300 pointer-events-none translate-y-2 group-hover:translate-y-0 z-30">
+                                    <div className="bg-slate-900 border border-white/10 p-4 rounded-2xl shadow-2xl backdrop-blur-xl min-w-[140px]">
+                                        <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-2 italic">Fiyat Analizi</p>
+                                        <div className="space-y-2">
+                                            <div className="flex justify-between text-[10px] font-mono">
+                                                <span className="text-slate-400">ÖNCEKİ:</span>
+                                                <span className="text-white">{data.prevPrice.toFixed(2)} CR</span>
+                                            </div>
+                                            <div className="flex justify-between text-[10px] font-mono border-t border-white/5 pt-2">
+                                                <span className="text-slate-400">DEĞİŞİM:</span>
+                                                <span className={isPositive ? 'text-green-500' : 'text-red-500'}>
+                                                    {isPositive ? '+' : ''}{percentChange}%
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <div className="absolute top-full left-6 w-3 h-3 bg-slate-900 border-r border-b border-white/10 rotate-45 -mt-1.5" />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-col gap-3">
+                                <div className="flex justify-between items-center text-[10px] font-mono text-slate-500 uppercase">
+                                    <span>Envanter:</span>
+                                    <span className="text-white">{(gameState.resources as any)[key] || 0}</span>
+                                </div>
+                                <button 
+                                    onClick={() => sellResources(key, data)} 
+                                    disabled={(gameState.resources as any)[key] <= 0}
+                                    className={`w-full py-4 rounded-xl text-[10px] font-black uppercase transition-all shadow-lg ${
+                                        (gameState.resources as any)[key] > 0 
+                                        ? 'bg-green-600 hover:bg-green-500 text-white' 
+                                        : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-50'
+                                    }`}
+                                >
+                                    Kaynağı Boşalt (CR Al)
+                                </button>
+                            </div>
+                        </div>
+                    );
+                })}
+             </div>
+           )}
+
            {activeTab === 'diplomacy' && (
              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in slide-in-from-right-8 duration-500">
                 <div className="glass p-10 rounded-[2.5rem] border border-cyan-500/20 bg-slate-900/10 shadow-2xl">
                     <div className="flex items-center gap-4 mb-8">
                         <Handshake className="text-cyan-400" size={32} />
-                        <h3 className="orbitron text-xl font-black text-white uppercase tracking-tighter italic">Yeni Takas <span className="text-cyan-400">Protokolü</span></h3>
+                        <h3 className="orbitron text-xl font-black text-white uppercase tracking-tighter italic text-left">Yeni Takas <span className="text-cyan-400">Protokolü</span></h3>
                     </div>
                     <div className="space-y-6">
                         <div className="flex flex-col gap-2 text-left">
@@ -813,25 +899,13 @@ const App = () => {
              </div>
            )}
 
-           {activeTab === 'market' && (
-             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                {Object.entries(gameState.market).map(([key, data]: [string, any]) => (
-                   <div key={key} className="glass p-8 rounded-[2.5rem] border border-white/5 text-left">
-                      <p className="orbitron text-sm font-black text-white uppercase mb-4 italic">{key.toUpperCase()}</p>
-                      <p className="orbitron text-3xl font-black text-yellow-500 mb-6">{data.price} <span className="text-sm">CR</span></p>
-                      <button onClick={() => sellResources(key, data)} className="w-full py-3 bg-green-600 rounded-xl text-[10px] font-black uppercase">Hepsini Sat</button>
-                   </div>
-                ))}
-             </div>
-           )}
-
            {activeTab === 'ai' && (
              <div className="max-w-2xl mx-auto glass p-12 rounded-[3.5rem] border border-cyan-500/20 text-left">
                 <div className="flex items-center gap-8 mb-12">
                    <div className="w-24 h-24 bg-cyan-950 rounded-[2rem] flex items-center justify-center border border-cyan-500/30">
                       <BrainCircuit className="text-cyan-400 w-12 h-12" />
                    </div>
-                   <h2 className="orbitron text-2xl font-black text-white uppercase italic tracking-tighter">Stratejik İstihbarat <span className="text-cyan-400">Merkezi</span></h2>
+                   <h2 className="orbitron text-2xl font-black text-white uppercase italic tracking-tighter text-left">Stratejik İstihbarat <span className="text-cyan-400">Merkezi</span></h2>
                 </div>
                 <div className="p-10 rounded-[2.5rem] bg-slate-950/90 border border-white/5 min-h-[180px] mb-10 font-mono text-cyan-50 leading-relaxed text-sm italic shadow-inner">
                    {aiLoading ? <Loader2 className="animate-spin text-cyan-400 mx-auto" size={40} /> : aiAdvice || "Amiral AI talimat bekliyor."}
@@ -898,7 +972,7 @@ const App = () => {
         </main>
 
         <footer className="py-20 text-center border-t border-slate-900/50">
-           <p className="orbitron text-[10px] font-black text-slate-700 uppercase tracking-[0.6em] mb-3">Nebula Galaktik Protokolü | v4.7 Galaktik Harita Genişletme</p>
+           <p className="orbitron text-[10px] font-black text-slate-700 uppercase tracking-[0.6em] mb-3">Nebula Galaktik Protokolü | v4.8 Dinamik Ticaret Güncellemesi</p>
            <p className="text-[9px] font-mono text-slate-800 uppercase tracking-widest">Amiral Seviyesi Senkronize Edildi</p>
         </footer>
       </div>
